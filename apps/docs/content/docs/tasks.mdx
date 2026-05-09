@@ -69,7 +69,7 @@ Automatic retry also has two extra conditions:
 
 ## Manual rerun vs. automatic retry
 
-A **manual rerun** is one you trigger from the UI or CLI:
+A **manual rerun** is one you trigger from the CLI or the API (`POST /api/issues/{id}/rerun`):
 
 ```bash
 multica issue rerun <issue-id>
@@ -88,7 +88,7 @@ Comparison:
 |---|---|---|
 | Trigger | System, based on failure reason | You, manually |
 | Ceiling | 2 attempts | No limit |
-| Applicable sources | Issues, chat | All sources |
+| Applicable sources | Issues, chat | Issues with an agent assignee |
 | Agent picked | Same agent as the failed task | Issue's current assignee |
 | Session inheritance | Yes (resumes prior session) | No (fresh session) |
 

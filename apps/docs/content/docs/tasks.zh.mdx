@@ -69,7 +69,7 @@ Multica 服务器每 30 秒扫描一次，有两种超时会触发失败：
 
 ## 手动重跑和自动重试的区别
 
-**手动重跑**（rerun）是你从 UI 或命令行主动发起的：
+**手动重跑**（rerun）是你通过命令行或 API（`POST /api/issues/{id}/rerun`）主动发起的：
 
 ```bash
 multica issue rerun <issue-id>
@@ -88,7 +88,7 @@ multica issue rerun <issue-id>
 |---|---|---|
 | 触发 | 系统基于失败原因自动执行 | 你主动发起 |
 | 上限 | 2 次 | 无上限 |
-| 适用来源 | issue、聊天 | 所有来源 |
+| 适用来源 | issue、聊天 | 有智能体分配人的 issue |
 | 跑哪个 agent | 失败任务原本的 agent | issue 当前的分配人 |
 | 会话继承 | 是（接着上次会话） | 否（全新会话） |
 
