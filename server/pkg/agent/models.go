@@ -66,7 +66,9 @@ func ListModels(ctx context.Context, providerType, executablePath string) ([]Mod
 			return discoverCursorModels(ctx, executablePath)
 		})
 	case "copilot":
-		return copilotStaticModels(), nil
+		return cachedDiscovery(providerType, func() ([]Model, error) {
+			return discoverCopilotModels(ctx, executablePath)
+		})
 	case "hermes":
 		return cachedDiscovery(providerType, func() ([]Model, error) {
 			return discoverHermesModels(ctx, executablePath)
@@ -198,18 +200,207 @@ func cursorStaticModels() []Model {
 	}
 }
 
-// copilotStaticModels — GitHub Copilot CLI resolves models via the
-// user's GitHub account, not via CLI args. We deliberately mark no
-// Default: the right model is whatever GitHub routes the request
-// to, and forcing one here would override that.
+// copilotStaticModels is the fallback for old/missing Copilot CLIs or
+// transient auth/network failures during JSON-RPC discovery. Modern
+// Copilot CLI exposes the account-aware catalog through headless
+// `models.list`; prefer discoverCopilotModels so enterprise policies,
+// plan entitlements, and new releases show up without a Multica deploy.
+//
+// We deliberately mark no Default: the right default is whatever the
+// user's Copilot CLI resolves when Multica omits --model.
 func copilotStaticModels() []Model {
 	return []Model{
+		{ID: "auto", Label: "Auto", Provider: "copilot"},
+		{ID: "gpt-5.5", Label: "GPT-5.5", Provider: "openai"},
 		{ID: "gpt-5.4", Label: "GPT-5.4", Provider: "openai"},
-		{ID: "claude-sonnet-4-6", Label: "Claude Sonnet 4.6", Provider: "anthropic"},
+		{ID: "gpt-5.4-mini", Label: "GPT-5.4 mini", Provider: "openai"},
+		{ID: "gpt-5.3-codex", Label: "GPT-5.3-Codex", Provider: "openai"},
+		{ID: "gpt-5.2-codex", Label: "GPT-5.2-Codex", Provider: "openai"},
+		{ID: "gpt-5.2", Label: "GPT-5.2", Provider: "openai"},
+		{ID: "gpt-5-mini", Label: "GPT-5 mini", Provider: "openai"},
+		{ID: "gpt-4.1", Label: "GPT-4.1", Provider: "openai"},
+		{ID: "claude-opus-4.7", Label: "Claude Opus 4.7", Provider: "anthropic"},
+		{ID: "claude-sonnet-4.6", Label: "Claude Sonnet 4.6", Provider: "anthropic"},
+		{ID: "claude-sonnet-4.5", Label: "Claude Sonnet 4.5", Provider: "anthropic"},
+		{ID: "claude-haiku-4.5", Label: "Claude Haiku 4.5", Provider: "anthropic"},
 	}
 }
 
 // ── Dynamic discovery ──
+
+// discoverCopilotModels starts Copilot's headless JSON-RPC server and
+// asks it for `models.list`. This is intentionally account-aware: the
+// CLI response reflects GitHub plan entitlements, org policy, and any
+// model catalog updates shipped by GitHub.
+func discoverCopilotModels(ctx context.Context, executablePath string) ([]Model, error) {
+	if executablePath == "" {
+		executablePath = "copilot"
+	}
+	if _, err := exec.LookPath(executablePath); err != nil {
+		return copilotStaticModels(), nil
+	}
+
+	runCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(runCtx, executablePath, "--headless", "--stdio", "--no-auto-update", "--log-level", "error")
+	hideAgentWindow(cmd)
+
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return copilotStaticModels(), nil
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		_ = stdin.Close()
+		return copilotStaticModels(), nil
+	}
+	cmd.Stderr = io.Discard
+
+	if err := cmd.Start(); err != nil {
+		return copilotStaticModels(), nil
+	}
+	defer func() {
+		_ = stdin.Close()
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		_, _ = cmd.Process.Wait()
+	}()
+
+	req := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      "1",
+		"method":  "models.list",
+		"params":  map[string]any{},
+	}
+	data, err := json.Marshal(req)
+	if err != nil {
+		return copilotStaticModels(), nil
+	}
+	if _, err := fmt.Fprintf(stdin, "Content-Length: %d\r\n\r\n", len(data)); err != nil {
+		return copilotStaticModels(), nil
+	}
+	if _, err := stdin.Write(data); err != nil {
+		return copilotStaticModels(), nil
+	}
+
+	raw, err := readCopilotRPCResult(bufio.NewReader(stdout), "1")
+	if err != nil {
+		return copilotStaticModels(), nil
+	}
+	models := parseCopilotRPCModels(raw)
+	if len(models) == 0 {
+		return copilotStaticModels(), nil
+	}
+	return models, nil
+}
+
+func readCopilotRPCResult(reader *bufio.Reader, requestID string) (json.RawMessage, error) {
+	for {
+		frame, err := readCopilotRPCFrame(reader)
+		if err != nil {
+			return nil, err
+		}
+
+		var resp struct {
+			ID     string          `json:"id"`
+			Result json.RawMessage `json:"result"`
+			Error  *struct {
+				Code    int    `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(frame, &resp); err != nil {
+			continue
+		}
+		if resp.ID != requestID {
+			continue
+		}
+		if resp.Error != nil {
+			return nil, fmt.Errorf("copilot models.list failed: %s", resp.Error.Message)
+		}
+		if len(resp.Result) == 0 {
+			return nil, fmt.Errorf("copilot models.list returned no result")
+		}
+		return resp.Result, nil
+	}
+}
+
+func readCopilotRPCFrame(reader *bufio.Reader) ([]byte, error) {
+	contentLength := 0
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return nil, err
+		}
+		if line == "\r\n" || line == "\n" {
+			break
+		}
+		var length int
+		if _, err := fmt.Sscanf(line, "Content-Length: %d", &length); err == nil {
+			contentLength = length
+		}
+	}
+	if contentLength <= 0 {
+		return nil, fmt.Errorf("copilot RPC frame missing Content-Length")
+	}
+	body := make([]byte, contentLength)
+	if _, err := io.ReadFull(reader, body); err != nil {
+		return nil, err
+	}
+	return body, nil
+}
+
+func parseCopilotRPCModels(raw json.RawMessage) []Model {
+	var resp struct {
+		Models []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return nil
+	}
+
+	models := make([]Model, 0, len(resp.Models))
+	seen := map[string]bool{}
+	for _, m := range resp.Models {
+		id := strings.TrimSpace(m.ID)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		label := strings.TrimSpace(m.Name)
+		if label == "" {
+			label = id
+		}
+		models = append(models, Model{
+			ID:       id,
+			Label:    label,
+			Provider: copilotModelProvider(id),
+		})
+	}
+	return models
+}
+
+func copilotModelProvider(id string) string {
+	switch {
+	case id == "auto":
+		return "copilot"
+	case strings.HasPrefix(id, "claude-"):
+		return "anthropic"
+	case strings.HasPrefix(id, "gpt-"), strings.HasPrefix(id, "o"):
+		return "openai"
+	case strings.HasPrefix(id, "gemini-"):
+		return "google"
+	case strings.HasPrefix(id, "grok-"):
+		return "xai"
+	}
+	if i := strings.IndexAny(id, "/:"); i > 0 {
+		return id[:i]
+	}
+	return ""
+}
 
 // discoverOpenCodeModels runs `opencode models` and parses its tabular
 // output. The CLI prints `provider/model` rows; we emit them verbatim

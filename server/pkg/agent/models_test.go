@@ -1,27 +1,42 @@
 package agent
 
 import (
+	"bufio"
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 )
 
 func TestListModelsStaticProviders(t *testing.T) {
 	ctx := context.Background()
-	for _, provider := range []string{"claude", "codex", "gemini", "cursor", "copilot"} {
-		got, err := ListModels(ctx, provider, "")
+	cases := []struct {
+		provider string
+		path     string
+	}{
+		{provider: "claude"},
+		{provider: "codex"},
+		{provider: "gemini"},
+		{provider: "cursor"},
+		// Keep the unit test hermetic: Copilot normally shells out to
+		// headless JSON-RPC discovery, but a missing binary should fall
+		// back to the static catalog immediately.
+		{provider: "copilot", path: "/nonexistent/copilot"},
+	}
+	for _, tc := range cases {
+		got, err := ListModels(ctx, tc.provider, tc.path)
 		if err != nil {
-			t.Fatalf("ListModels(%q) error: %v", provider, err)
+			t.Fatalf("ListModels(%q) error: %v", tc.provider, err)
 		}
 		if len(got) == 0 {
-			t.Errorf("ListModels(%q) returned no models", provider)
+			t.Errorf("ListModels(%q) returned no models", tc.provider)
 		}
 		for i, m := range got {
 			if m.ID == "" {
-				t.Errorf("ListModels(%q)[%d] has empty ID", provider, i)
+				t.Errorf("ListModels(%q)[%d] has empty ID", tc.provider, i)
 			}
 			if m.Label == "" {
-				t.Errorf("ListModels(%q)[%d] has empty Label", provider, i)
+				t.Errorf("ListModels(%q)[%d] has empty Label", tc.provider, i)
 			}
 		}
 	}
@@ -93,6 +108,86 @@ func TestCodexStaticModelsExposesGPT55(t *testing.T) {
 	}
 	if defaults != 1 {
 		t.Errorf("expected exactly one default Codex entry, got %d", defaults)
+	}
+}
+
+func TestCopilotStaticModelsExposesBroadFallbackCatalog(t *testing.T) {
+	// Copilot's real catalog is discovered dynamically through the
+	// CLI's headless `models.list` RPC. The static list is only the
+	// offline/no-auth fallback, but it still needs to be broad enough
+	// that a discovery hiccup doesn't regress the picker to two rows.
+	models := copilotStaticModels()
+	if len(models) < 10 {
+		t.Fatalf("expected broad Copilot fallback catalog, got %d: %+v", len(models), models)
+	}
+	ids := map[string]Model{}
+	for _, m := range models {
+		ids[m.ID] = m
+	}
+	for _, want := range []string{
+		"auto",
+		"gpt-5.5", "gpt-5.4", "gpt-5.4-mini",
+		"gpt-5.3-codex", "gpt-5.2-codex", "gpt-4.1",
+		"claude-sonnet-4.6", "claude-opus-4.7", "claude-haiku-4.5",
+	} {
+		if _, ok := ids[want]; !ok {
+			t.Errorf("missing expected Copilot fallback model %q in: %+v", want, models)
+		}
+	}
+	for _, m := range models {
+		if m.Default {
+			t.Errorf("Copilot fallback should not mark a default model, got %+v", m)
+		}
+	}
+}
+
+func TestParseCopilotRPCModels(t *testing.T) {
+	raw := []byte(`{
+		"models": [
+			{"id": "auto", "name": "Auto"},
+			{"id": "claude-sonnet-4.6", "name": "Claude Sonnet 4.6"},
+			{"id": "gpt-5.4-mini", "name": "GPT-5.4 mini"},
+			{"id": "gemini-3-pro-preview", "name": "Gemini 3 Pro Preview"},
+			{"id": "grok-code-fast-1", "name": "Grok Code Fast 1"},
+			{"id": "custom/provider-model", "name": ""},
+			{"id": "gpt-5.4-mini", "name": "duplicate"},
+			{"id": "", "name": "empty"}
+		]
+	}`)
+
+	models := parseCopilotRPCModels(raw)
+	if len(models) != 6 {
+		t.Fatalf("expected 6 parsed models, got %d: %+v", len(models), models)
+	}
+
+	assertModel := func(index int, id, label, provider string) {
+		t.Helper()
+		if models[index].ID != id || models[index].Label != label || models[index].Provider != provider {
+			t.Fatalf("models[%d] = %+v, want id=%q label=%q provider=%q", index, models[index], id, label, provider)
+		}
+	}
+	assertModel(0, "auto", "Auto", "copilot")
+	assertModel(1, "claude-sonnet-4.6", "Claude Sonnet 4.6", "anthropic")
+	assertModel(2, "gpt-5.4-mini", "GPT-5.4 mini", "openai")
+	assertModel(3, "gemini-3-pro-preview", "Gemini 3 Pro Preview", "google")
+	assertModel(4, "grok-code-fast-1", "Grok Code Fast 1", "xai")
+	assertModel(5, "custom/provider-model", "custom/provider-model", "custom")
+}
+
+func TestReadCopilotRPCResultSkipsNotifications(t *testing.T) {
+	frame := func(body string) string {
+		return fmt.Sprintf("Content-Length: %d\r\n\r\n%s", len(body), body)
+	}
+	input := frame(`{"jsonrpc":"2.0","method":"log","params":{"message":"ignored"}}`) +
+		frame(`{"jsonrpc":"2.0","id":"1","result":{"models":[{"id":"auto","name":"Auto"}]}}`)
+
+	raw, err := readCopilotRPCResult(bufio.NewReader(strings.NewReader(input)), "1")
+	if err != nil {
+		t.Fatalf("readCopilotRPCResult error: %v", err)
+	}
+	models := parseCopilotRPCModels(raw)
+	if len(models) != 1 || models[0].ID != "auto" {
+		t.Fatalf("unexpected models from RPC result: %+v", models)
 	}
 }
 
