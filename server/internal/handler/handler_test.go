@@ -1817,14 +1817,18 @@ func TestResolveActor(t *testing.T) {
 			wantActorType: "member",
 		},
 		{
-			name:          "valid agent ID returns agent",
+			// X-Agent-ID without X-Task-ID is not trusted — otherwise a
+			// workspace member who guesses an agent's UUID could impersonate
+			// it and bypass the private-agent gate. See resolveActor for the
+			// rationale.
+			name:          "agent ID without task ID returns member",
 			agentIDHeader: agentID,
-			wantActorType: "agent",
-			wantIsAgent:   true,
+			wantActorType: "member",
 		},
 		{
-			name:          "non-existent agent ID returns member",
+			name:          "non-existent agent ID with task returns member",
 			agentIDHeader: "00000000-0000-0000-0000-000000000099",
+			taskIDHeader:  taskID,
 			wantActorType: "member",
 		},
 		{
