@@ -31,7 +31,12 @@ export function SquadDetailPage() {
 
   return (
     <div className="flex flex-1 flex-col">
-      <PageHeader title={squad.name} />
+      <PageHeader className="justify-between px-5">
+        <div className="flex items-center gap-2">
+          <Users className="h-4 w-4 text-muted-foreground" />
+          <h1 className="text-sm font-medium">{squad.name}</h1>
+        </div>
+      </PageHeader>
       <div className="flex-1 p-6 space-y-6">
         {squad.description && (
           <p className="text-sm text-muted-foreground">{squad.description}</p>

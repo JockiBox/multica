@@ -7,7 +7,6 @@ import { AppLink } from "../../navigation";
 import { PageHeader } from "../../layout/page-header";
 import { Users, Plus } from "lucide-react";
 import { Button } from "@multica/ui/components/ui/button";
-import { useModalStore } from "@multica/core/modals";
 import type { Squad } from "@multica/core/types";
 
 export function SquadsPage() {
@@ -21,15 +20,19 @@ export function SquadsPage() {
 
   return (
     <div className="flex flex-1 flex-col">
-      <PageHeader
-        title="Squads"
-        actions={
-          <Button size="sm" onClick={() => useModalStore.getState().open("create-squad")}>
-            <Plus className="size-4 mr-1" />
-            New Squad
-          </Button>
-        }
-      />
+      <PageHeader className="justify-between px-5">
+        <div className="flex items-center gap-2">
+          <Users className="h-4 w-4 text-muted-foreground" />
+          <h1 className="text-sm font-medium">Squads</h1>
+          {!isLoading && squads.length > 0 && (
+            <span className="text-xs text-muted-foreground tabular-nums">{squads.length}</span>
+          )}
+        </div>
+        <Button size="sm" variant="outline">
+          <Plus className="size-3.5 mr-1.5" />
+          New Squad
+        </Button>
+      </PageHeader>
       <div className="flex-1 p-6">
         {isLoading ? (
           <div className="text-muted-foreground text-sm">Loading...</div>
