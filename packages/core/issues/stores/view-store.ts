@@ -10,6 +10,7 @@ import { createWorkspaceAwareStorage, registerForWorkspaceRehydration } from "..
 import { defaultStorage } from "../../platform/storage";
 
 export type ViewMode = "board" | "list";
+export type IssueGrouping = "status" | "assignee";
 export type SortField = "position" | "priority" | "start_date" | "due_date" | "created_at" | "title";
 export type SortDirection = "asc" | "desc";
 
@@ -38,6 +39,11 @@ export const SORT_OPTIONS: { value: SortField; label: string }[] = [
   { value: "title", label: "Title" },
 ];
 
+export const GROUPING_OPTIONS: { value: IssueGrouping; label: string }[] = [
+  { value: "status", label: "Status" },
+  { value: "assignee", label: "Assignee" },
+];
+
 export const CARD_PROPERTY_OPTIONS: { key: keyof CardProperties; label: string }[] = [
   { key: "priority", label: "Priority" },
   { key: "description", label: "Description" },
@@ -51,6 +57,7 @@ export const CARD_PROPERTY_OPTIONS: { key: keyof CardProperties; label: string }
 
 export interface IssueViewState {
   viewMode: ViewMode;
+  grouping: IssueGrouping;
   statusFilters: IssueStatus[];
   priorityFilters: IssuePriority[];
   assigneeFilters: ActorFilterValue[];
@@ -64,6 +71,7 @@ export interface IssueViewState {
   cardProperties: CardProperties;
   listCollapsedStatuses: IssueStatus[];
   setViewMode: (mode: ViewMode) => void;
+  setGrouping: (grouping: IssueGrouping) => void;
   toggleStatusFilter: (status: IssueStatus) => void;
   togglePriorityFilter: (priority: IssuePriority) => void;
   toggleAssigneeFilter: (value: ActorFilterValue) => void;
@@ -83,6 +91,7 @@ export interface IssueViewState {
 
 export const viewStoreSlice = (set: StoreApi<IssueViewState>["setState"]): IssueViewState => ({
   viewMode: "board",
+  grouping: "status",
   statusFilters: [],
   priorityFilters: [],
   assigneeFilters: [],
@@ -106,6 +115,7 @@ export const viewStoreSlice = (set: StoreApi<IssueViewState>["setState"]): Issue
   listCollapsedStatuses: [],
 
   setViewMode: (mode) => set({ viewMode: mode }),
+  setGrouping: (grouping) => set({ grouping }),
   toggleStatusFilter: (status) =>
     set((state) => ({
       statusFilters: state.statusFilters.includes(status)
@@ -209,6 +219,7 @@ export const viewStorePersistOptions = (name: string) => ({
   storage: createJSONStorage(() => createWorkspaceAwareStorage(defaultStorage)),
   partialize: (state: IssueViewState) => ({
     viewMode: state.viewMode,
+    grouping: state.grouping,
     statusFilters: state.statusFilters,
     priorityFilters: state.priorityFilters,
     assigneeFilters: state.assigneeFilters,
