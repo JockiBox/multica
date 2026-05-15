@@ -1212,6 +1212,112 @@ func TestExecuteAndDrain_IdleWatchdog_HappyPathDoesNotFire(t *testing.T) {
 	}
 }
 
+// longToolCallBackend simulates a legitimate long-running tool call (e.g.
+// `npm install`, `docker build`, full test suite). The backend emits a
+// tool_use, stays silent past the idle window while the tool runs, then emits
+// a tool_result and completes. This is the false-positive case the watchdog
+// must NOT misfire on: an in-flight tool call is forward progress, not a hang.
+type longToolCallBackend struct {
+	toolSilence time.Duration // how long to stay silent between tool_use and tool_result
+}
+
+func (b longToolCallBackend) Execute(ctx context.Context, _ string, _ agent.ExecOptions) (*agent.Session, error) {
+	msgCh := make(chan agent.Message, 4)
+	resCh := make(chan agent.Result, 1)
+
+	msgCh <- agent.Message{
+		Type:   agent.MessageToolUse,
+		Tool:   "Bash",
+		CallID: "call-1",
+		Input:  map[string]any{"cmd": "npm install"},
+	}
+
+	go func() {
+		select {
+		case <-time.After(b.toolSilence):
+		case <-ctx.Done():
+			// Watchdog cancelled us — propagate so the caller sees aborted.
+			resCh <- agent.Result{Status: "aborted", Error: ctx.Err().Error()}
+			close(msgCh)
+			close(resCh)
+			return
+		}
+		msgCh <- agent.Message{
+			Type:   agent.MessageToolResult,
+			Tool:   "Bash",
+			CallID: "call-1",
+			Output: "installed 142 packages",
+		}
+		msgCh <- agent.Message{Type: agent.MessageText, Content: "done"}
+		close(msgCh)
+		resCh <- agent.Result{Status: "completed", Output: "done"}
+		close(resCh)
+	}()
+
+	return &agent.Session{Messages: msgCh, Result: resCh}, nil
+}
+
+func TestExecuteAndDrain_IdleWatchdog_DoesNotFireDuringInFlightToolCall(t *testing.T) {
+	t.Parallel()
+
+	d := newTestDaemon(t)
+	// 50 ms window; tool stays silent for ~4× the window. Without the
+	// in-flight-tool gate, the watchdog would fire and the run would come
+	// back as idle_watchdog. With the gate, it must complete normally.
+	d.cfg.AgentIdleWatchdog = 50 * time.Millisecond
+
+	result, _, err := d.executeAndDrain(
+		context.Background(),
+		longToolCallBackend{toolSilence: 200 * time.Millisecond},
+		"p",
+		agent.ExecOptions{},
+		slog.Default(),
+		"t-long-tool",
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status == "idle_watchdog" {
+		t.Fatalf("watchdog must not fire while a tool_use is in flight, got status=%q (err=%q)", result.Status, result.Error)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("expected status=completed, got %q (err=%q)", result.Status, result.Error)
+	}
+}
+
+// tailIdleAfterToolBackend exercises the boundary case: a tool call completes,
+// and THEN the backend goes silent without ever finishing. After the
+// tool_result lands, in-flight count returns to zero and lastActivityAt is
+// fresh; the watchdog should fire exactly one window later, not earlier.
+type tailIdleAfterToolBackend struct{}
+
+func (tailIdleAfterToolBackend) Execute(_ context.Context, _ string, _ agent.ExecOptions) (*agent.Session, error) {
+	msgCh := make(chan agent.Message, 4)
+	resCh := make(chan agent.Result)
+	msgCh <- agent.Message{Type: agent.MessageToolUse, Tool: "Bash", CallID: "c1"}
+	msgCh <- agent.Message{Type: agent.MessageToolResult, Tool: "Bash", CallID: "c1", Output: "ok"}
+	// Deliberately leave msgCh open and never write to resCh.
+	return &agent.Session{Messages: msgCh, Result: resCh}, nil
+}
+
+func TestExecuteAndDrain_IdleWatchdog_FiresAfterToolResultIfBackendStaysSilent(t *testing.T) {
+	t.Parallel()
+
+	d := newTestDaemon(t)
+	d.cfg.AgentIdleWatchdog = 50 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	result, _, err := d.executeAndDrain(ctx, tailIdleAfterToolBackend{}, "p", agent.ExecOptions{}, slog.Default(), "t-tail-idle")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != "idle_watchdog" {
+		t.Fatalf("expected status=idle_watchdog after tool_result with no further activity, got %q (err=%q)", result.Status, result.Error)
+	}
+}
+
 func TestEnsureRepoReadyFastPathDoesNotRefresh(t *testing.T) {
 	t.Parallel()
 

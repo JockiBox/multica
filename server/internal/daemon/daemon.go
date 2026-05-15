@@ -2598,10 +2598,16 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 	// message also trips the watchdog.
 	var lastActivityAt atomic.Int64
 	lastActivityAt.Store(time.Now().UnixNano())
+	// inFlightTools counts tool_use messages that haven't yet been paired
+	// with a matching tool_result. A non-zero count means the agent is
+	// legitimately waiting on a tool (e.g. `npm install`, `docker build`)
+	// that may run far longer than the idle window without emitting any
+	// message — so the watchdog must not interpret that silence as a hang.
+	var inFlightTools atomic.Int32
 	var idleWatchdogFired atomic.Bool
 	idleWindow := d.cfg.AgentIdleWatchdog
 	if idleWindow > 0 {
-		go d.runIdleWatchdog(agentCtx, idleWindow, &lastActivityAt, &idleWatchdogFired, agentCancel, session.Messages, taskLog, taskID)
+		go d.runIdleWatchdog(agentCtx, idleWindow, &lastActivityAt, &inFlightTools, &idleWatchdogFired, agentCancel, session.Messages, taskLog, taskID)
 	}
 
 	go func() {
@@ -2694,6 +2700,7 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 					}
 				case agent.MessageToolUse:
 					n := toolCount.Add(1)
+					inFlightTools.Add(1)
 					taskLog.Info(fmt.Sprintf("tool #%d: %s", n, msg.Tool))
 					if msg.CallID != "" {
 						mu.Lock()
@@ -2710,6 +2717,20 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 					})
 					mu.Unlock()
 				case agent.MessageToolResult:
+					// Decrement only when the count would stay >= 0. A stray
+					// tool_result with no matching tool_use (backend bug or
+					// reconnect mid-stream) shouldn't push the counter
+					// negative — that would re-arm the watchdog one tool_use
+					// too early on the next call.
+					for {
+						cur := inFlightTools.Load()
+						if cur <= 0 {
+							break
+						}
+						if inFlightTools.CompareAndSwap(cur, cur-1) {
+							break
+						}
+					}
 					s := seq.Add(1)
 					output := msg.Output
 					if len(output) > 8192 {
@@ -2814,19 +2835,24 @@ func idleWatchdogReason(window time.Duration) string {
 }
 
 // runIdleWatchdog ticks until either agentCtx is cancelled or the backend has
-// been silent for at least window. On firing, it sets fired and calls cancel,
-// which propagates to the agent subprocess (via the ctx passed to
-// backend.Execute) and to drainCtx. The check requires both:
+// been silent for at least window with no in-flight tool call. On firing, it
+// sets fired and calls cancel, which propagates to the agent subprocess (via
+// the ctx passed to backend.Execute) and to drainCtx. The check requires:
 //
-//  1. time since lastActivityAt exceeds window — the drain loop is single
+//  1. inFlightTools == 0 — the backend has emitted a tool_use whose
+//     matching tool_result hasn't arrived yet, meaning a real tool (e.g.
+//     `npm install`, `docker build`) is legitimately running. Long tool
+//     calls produce no messages between use and result; killing here would
+//     yank the agent mid-build. AND
+//  2. time since lastActivityAt exceeds window — the drain loop is single
 //     reader, so a stale stamp means no message has actually arrived; AND
-//  2. session.Messages buffer is empty — defensive against a hypothetical
+//  3. session.Messages buffer is empty — defensive against a hypothetical
 //     drain stall where unprocessed messages would still imply progress.
 //
 // Tick interval is window/2 (floored at 30 s in production, but the floor only
 // kicks in for windows >= 1 min so tests can pass tiny windows like 50 ms and
 // see the watchdog fire within a few ticks).
-func (d *Daemon) runIdleWatchdog(agentCtx context.Context, window time.Duration, lastActivityAt *atomic.Int64, fired *atomic.Bool, cancel context.CancelFunc, messages <-chan agent.Message, taskLog *slog.Logger, taskID string) {
+func (d *Daemon) runIdleWatchdog(agentCtx context.Context, window time.Duration, lastActivityAt *atomic.Int64, inFlightTools *atomic.Int32, fired *atomic.Bool, cancel context.CancelFunc, messages <-chan agent.Message, taskLog *slog.Logger, taskID string) {
 	interval := window / 2
 	if window >= time.Minute && interval < 30*time.Second {
 		interval = 30 * time.Second
@@ -2841,6 +2867,13 @@ func (d *Daemon) runIdleWatchdog(agentCtx context.Context, window time.Duration,
 		case <-agentCtx.Done():
 			return
 		case <-ticker.C:
+			// In-flight tool call: the agent has emitted tool_use and
+			// the corresponding tool_result hasn't landed yet. A long
+			// build/install/test can sit here silently for many minutes
+			// — that is forward progress, not a hang.
+			if inFlightTools.Load() > 0 {
+				continue
+			}
 			last := time.Unix(0, lastActivityAt.Load())
 			idleFor := time.Since(last)
 			if idleFor < window {
