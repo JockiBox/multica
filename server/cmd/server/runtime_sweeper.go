@@ -32,9 +32,11 @@ const (
 	// after this duration. 7 days gives users plenty of time to restart daemons.
 	offlineRuntimeTTLSeconds = 7 * 24 * 3600.0
 	// dispatchTimeoutSeconds fails tasks stuck in 'dispatched' beyond this.
-	// The dispatched→running transition should be near-instant, so 5 minutes
+	// The dispatched→running transition should be near-instant, so 60 seconds
 	// means something went wrong (e.g. StartTask API call failed silently).
-	dispatchTimeoutSeconds = 300.0
+	// Reduced from 300s to 60s (MUL-2246) to shrink the "black hole" window
+	// when a daemon claim response is lost and the task sits unstarted.
+	dispatchTimeoutSeconds = 60.0
 	// runningTimeoutSeconds fails tasks stuck in 'running' beyond this.
 	// The default agent timeout is 2h, so 2.5h gives a generous buffer.
 	runningTimeoutSeconds = 9000.0

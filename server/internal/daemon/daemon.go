@@ -1661,13 +1661,13 @@ func (d *Daemon) pollLoop(ctx context.Context, taskWakeups <-chan struct{}) erro
 // claiming first and then waiting for a slot — would let claimed tasks pile
 // up in the server-side `dispatched` state without a corresponding
 // StartTask, and the server's sweeper would fail them as `failed/timeout`
-// after dispatchTimeoutSeconds=300s (runtime_sweeper.go:25). That is the
+// after dispatchTimeoutSeconds=60s (runtime_sweeper.go:25). That is the
 // exact user-visible failure this issue is fixing, so we cannot risk
 // recreating it under load.
 //
 // Slot-before-claim does mean a slow claim holds a slot during its HTTP
 // roundtrip; the upper bound is `client.Timeout = 30s` (client.go:59), well
-// below the 300s dispatch timeout, so other runtimes' tasks stay in
+// below the 60s dispatch timeout, so other runtimes' tasks stay in
 // server-side `queued` state (which has no timeout) rather than entering
 // `dispatched` and racing the sweeper.
 //
