@@ -162,6 +162,33 @@ func FindDaemonCredential(store DaemonCredentialStore, serverURL, daemonID, work
 	return DaemonCredential{}, false
 }
 
+// ServerURLForDaemonCredentials returns the unique server URL used by saved
+// daemon credentials for daemonID. If credentials span multiple servers, the
+// caller must provide an explicit server URL instead of guessing.
+func ServerURLForDaemonCredentials(store DaemonCredentialStore, daemonID string) (string, bool) {
+	var found string
+	for _, c := range store.Credentials {
+		if daemonID != "" && c.DaemonID != daemonID {
+			continue
+		}
+		if c.ServerURL == "" || c.DaemonToken == "" {
+			continue
+		}
+		serverURL := normalizeServerURL(c.ServerURL)
+		if serverURL == "" {
+			continue
+		}
+		if found == "" {
+			found = serverURL
+			continue
+		}
+		if found != serverURL {
+			return "", false
+		}
+	}
+	return found, found != ""
+}
+
 // UpsertDaemonCredential inserts or replaces a credential keyed on
 // (server, workspace, daemon). Two installs against the same trio collapse
 // to a single row — the latest mdt_ wins, which matches the server-side

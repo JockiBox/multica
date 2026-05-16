@@ -156,6 +156,14 @@ func healthPortForProfile(profile string) int {
 // --- daemon start ---
 
 func runDaemonStart(cmd *cobra.Command, _ []string) error {
+	// An install token is single-use. Refuse before exchange when this start
+	// would only fail because the same-profile daemon is already running.
+	if installTokenFromCommand(cmd) != "" {
+		if err := ensureDaemonNotAlreadyRunningForInstall(cmd); err != nil {
+			return err
+		}
+	}
+
 	// Exchange a one-time install token before any process branching. An
 	// mit_ is strictly single-use server-side, so we do this in the parent
 	// and let the background child pick the resulting mdt_ up from the
@@ -172,6 +180,31 @@ func runDaemonStart(cmd *cobra.Command, _ []string) error {
 	return runDaemonBackground(cmd)
 }
 
+func installTokenFromCommand(cmd *cobra.Command) string {
+	token, _ := cmd.Flags().GetString("install-token")
+	if strings.TrimSpace(token) == "" {
+		token = os.Getenv("MULTICA_INSTALL_TOKEN")
+	}
+	return strings.TrimSpace(token)
+}
+
+func ensureDaemonNotAlreadyRunningForInstall(cmd *cobra.Command) error {
+	profile := resolveProfile(cmd)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	health := checkDaemonHealthOnPort(ctx, healthPortForProfile(profile))
+	if health["status"] != "running" {
+		return nil
+	}
+
+	label := "daemon"
+	if profile != "" {
+		label = fmt.Sprintf("daemon [%s]", profile)
+	}
+	pid, _ := health["pid"].(float64)
+	return fmt.Errorf("%s is already running (pid %v). Install token was not redeemed; stop or restart the daemon, then retry", label, int(pid))
+}
+
 // maybeExchangeInstallToken redeems a `mit_` install token for a long-lived
 // `mdt_` daemon credential when the user passed --install-token (or the
 // MULTICA_INSTALL_TOKEN env var). On success the credential is persisted via
@@ -182,11 +215,7 @@ func runDaemonStart(cmd *cobra.Command, _ []string) error {
 // the existing credential path: keychain → CLIConfig.Token (PAT). That
 // preserves the legacy "multica login --token <mul_> + daemon start" flow.
 func maybeExchangeInstallToken(cmd *cobra.Command) error {
-	token, _ := cmd.Flags().GetString("install-token")
-	if strings.TrimSpace(token) == "" {
-		token = strings.TrimSpace(os.Getenv("MULTICA_INSTALL_TOKEN"))
-	}
-	token = strings.TrimSpace(token)
+	token := installTokenFromCommand(cmd)
 	if token == "" {
 		return nil
 	}
@@ -195,22 +224,6 @@ func maybeExchangeInstallToken(cmd *cobra.Command) error {
 	}
 
 	profile := resolveProfile(cmd)
-
-	// Resolve server URL the same way runDaemonForeground does so the
-	// exchange targets the same host the daemon will then register against.
-	serverURL := cli.FlagOrEnv(cmd, "server-url", "MULTICA_SERVER_URL", "")
-	if serverURL == "" {
-		if c, err := cli.LoadCLIConfigForProfile(profile); err == nil && c.ServerURL != "" {
-			serverURL = c.ServerURL
-		}
-	}
-	if serverURL == "" {
-		serverURL = daemon.DefaultServerURL
-	}
-	normalized, err := daemon.NormalizeServerBaseURL(serverURL)
-	if err != nil {
-		return fmt.Errorf("normalize server URL: %w", err)
-	}
 
 	// Daemon identity must be stable across the exchange and the very first
 	// register/heartbeat. EnsureDaemonID writes (or reads) the persistent
@@ -225,6 +238,29 @@ func maybeExchangeInstallToken(cmd *cobra.Command) error {
 			return fmt.Errorf("ensure daemon id: %w", err)
 		}
 		daemonID = persisted
+	}
+
+	// Resolve server URL the same way runDaemonForeground does so the
+	// exchange targets the same host the daemon will then register against.
+	serverURL := cli.FlagOrEnv(cmd, "server-url", "MULTICA_SERVER_URL", "")
+	if serverURL == "" {
+		if c, err := cli.LoadCLIConfigForProfile(profile); err == nil && c.ServerURL != "" {
+			serverURL = c.ServerURL
+		}
+	}
+	if serverURL == "" {
+		if store, err := cli.LoadDaemonCredentials(profile); err == nil {
+			if savedServerURL, ok := cli.ServerURLForDaemonCredentials(store, daemonID); ok {
+				serverURL = savedServerURL
+			}
+		}
+	}
+	if serverURL == "" {
+		serverURL = daemon.DefaultServerURL
+	}
+	normalized, err := daemon.NormalizeServerBaseURL(serverURL)
+	if err != nil {
+		return fmt.Errorf("normalize server URL: %w", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)

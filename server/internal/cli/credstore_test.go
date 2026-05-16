@@ -96,6 +96,25 @@ func TestDaemonCredentials_Remove(t *testing.T) {
 	}
 }
 
+func TestServerURLForDaemonCredentials(t *testing.T) {
+	store := DaemonCredentialStore{Version: 1, Credentials: []DaemonCredential{
+		{ServerURL: "https://api.multica.test/", WorkspaceID: "w1", DaemonID: "d", DaemonToken: "t1"},
+		{ServerURL: "https://api.multica.test", WorkspaceID: "w2", DaemonID: "d", DaemonToken: "t2"},
+		{ServerURL: "https://other.multica.test", WorkspaceID: "w1", DaemonID: "other-d", DaemonToken: "t3"},
+	}}
+	got, ok := ServerURLForDaemonCredentials(store, "d")
+	if !ok || got != "https://api.multica.test" {
+		t.Fatalf("ServerURLForDaemonCredentials = %q, %v; want saved server", got, ok)
+	}
+
+	store.Credentials = append(store.Credentials, DaemonCredential{
+		ServerURL: "https://second.multica.test", WorkspaceID: "w3", DaemonID: "d", DaemonToken: "t4",
+	})
+	if got, ok := ServerURLForDaemonCredentials(store, "d"); ok || got != "" {
+		t.Fatalf("ambiguous ServerURLForDaemonCredentials = %q, %v; want no match", got, ok)
+	}
+}
+
 func TestNormalizeServerURL(t *testing.T) {
 	cases := map[string]string{
 		"https://API.Multica.test/": "https://api.multica.test",

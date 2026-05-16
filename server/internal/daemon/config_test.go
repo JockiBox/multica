@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/multica-ai/multica/server/internal/cli"
 )
 
 func TestPatternsFromEnv_DefaultsWhenUnset(t *testing.T) {
@@ -354,5 +356,44 @@ func TestLoadConfig_SkipsLoginShellWhenLookPathSucceeds(t *testing.T) {
 		t.Fatalf("login shell was invoked even though exec.LookPath found every agent — laziness broken")
 	} else if !os.IsNotExist(err) {
 		t.Fatalf("unexpected error stat-ing marker file: %v", err)
+	}
+}
+
+func TestLoadConfig_InfersServerURLFromSavedDaemonCredential(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("MULTICA_SERVER_URL", "")
+
+	pathDir := t.TempDir()
+	fakeClaude := filepath.Join(pathDir, "claude")
+	if err := os.WriteFile(fakeClaude, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+	t.Setenv("PATH", pathDir)
+	t.Setenv("MULTICA_CLAUDE_PATH", "claude")
+	t.Setenv("SHELL", "/usr/bin/fish")
+
+	daemonID := "11111111-1111-1111-1111-111111111111"
+	t.Setenv("MULTICA_DAEMON_ID", daemonID)
+	if err := cli.SaveDaemonCredentials(cli.DaemonCredentialStore{
+		Version: 1,
+		Credentials: []cli.DaemonCredential{{
+			ServerURL:   "https://api.multica.test/",
+			WorkspaceID: "ws-1",
+			DaemonID:    daemonID,
+			DaemonToken: "mdt_test",
+		}},
+	}, ""); err != nil {
+		t.Fatalf("save daemon credentials: %v", err)
+	}
+
+	cfg, err := LoadConfig(Overrides{
+		WorkspacesRoot: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.ServerBaseURL != "https://api.multica.test" {
+		t.Fatalf("ServerBaseURL = %q, want saved credential server", cfg.ServerBaseURL)
 	}
 }

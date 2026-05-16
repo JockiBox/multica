@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/mattn/go-shellwords"
+	"github.com/multica-ai/multica/server/internal/cli"
 )
 
 const (
@@ -31,16 +32,16 @@ const (
 	// daemon-visible activity — see MUL-2300. 30 min keeps the safety net for
 	// truly stuck runs (dockerd hang) while leaving headroom for long writes.
 	// Set MULTICA_AGENT_IDLE_WATCHDOG=0 to disable.
-	DefaultAgentIdleWatchdog = 30 * time.Minute
-	DefaultRuntimeName                    = "Local Agent"
-	DefaultWorkspaceSyncInterval          = 30 * time.Second
-	DefaultHealthPort                     = 19514
-	DefaultMaxConcurrentTasks             = 20
-	DefaultGCInterval                     = 1 * time.Hour
-	DefaultGCTTL                          = 24 * time.Hour // 1 day — AI-coding issues rarely stay open long
-	DefaultGCOrphanTTL                    = 72 * time.Hour // 3 days — orphans with no meta (crashes, pre-GC leftovers)
-	DefaultGCArtifactTTL                  = 12 * time.Hour // 12h — drop regenerable artifacts on completed but still-open issues
-	DefaultAutoUpdateCheckInterval        = 6 * time.Hour  // how often the daemon polls GitHub for a newer CLI release
+	DefaultAgentIdleWatchdog       = 30 * time.Minute
+	DefaultRuntimeName             = "Local Agent"
+	DefaultWorkspaceSyncInterval   = 30 * time.Second
+	DefaultHealthPort              = 19514
+	DefaultMaxConcurrentTasks      = 20
+	DefaultGCInterval              = 1 * time.Hour
+	DefaultGCTTL                   = 24 * time.Hour // 1 day — AI-coding issues rarely stay open long
+	DefaultGCOrphanTTL             = 72 * time.Hour // 3 days — orphans with no meta (crashes, pre-GC leftovers)
+	DefaultGCArtifactTTL           = 12 * time.Hour // 12h — drop regenerable artifacts on completed but still-open issues
+	DefaultAutoUpdateCheckInterval = 6 * time.Hour  // how often the daemon polls GitHub for a newer CLI release
 )
 
 // DefaultGCArtifactPatterns lists basename matches that the GC loop treats as
@@ -108,10 +109,43 @@ type Overrides struct {
 // LoadConfig builds the daemon configuration from environment variables
 // and optional CLI flag overrides.
 func LoadConfig(overrides Overrides) (Config, error) {
-	// Server URL: override > env > default
-	rawServerURL := envOrDefault("MULTICA_SERVER_URL", DefaultServerURL)
+	// Profile
+	profile := overrides.Profile
+
+	// daemon_id resolution: override > env > persistent UUID on disk.
+	// The persistent UUID is written once to `<profile-dir>/daemon.id` and
+	// then reused forever so hostname drift (.local suffix, system rename,
+	// mDNS state, profile switch) no longer mints a new runtime identity.
+	// Callers may still pin a specific id via MULTICA_DAEMON_ID or the
+	// override field (e.g. for tests or embedded environments).
+	daemonID := strings.TrimSpace(os.Getenv("MULTICA_DAEMON_ID"))
+	if overrides.DaemonID != "" {
+		daemonID = overrides.DaemonID
+	}
+	if daemonID == "" {
+		persisted, err := EnsureDaemonID(profile)
+		if err != nil {
+			return Config{}, fmt.Errorf("ensure daemon id: %w", err)
+		}
+		daemonID = persisted
+	}
+
+	// Server URL: override > env > saved mdt_ credential > default. The
+	// credential fallback lets a daemon restarted without --server-url reuse
+	// the server that issued its saved daemon token.
+	rawServerURL := strings.TrimSpace(os.Getenv("MULTICA_SERVER_URL"))
 	if overrides.ServerURL != "" {
 		rawServerURL = overrides.ServerURL
+	}
+	if rawServerURL == "" {
+		if store, err := cli.LoadDaemonCredentials(profile); err == nil {
+			if serverURL, ok := cli.ServerURLForDaemonCredentials(store, daemonID); ok {
+				rawServerURL = serverURL
+			}
+		}
+	}
+	if rawServerURL == "" {
+		rawServerURL = DefaultServerURL
 	}
 	serverBaseURL, err := NormalizeServerBaseURL(rawServerURL)
 	if err != nil {
@@ -269,26 +303,6 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		maxConcurrentTasks = overrides.MaxConcurrentTasks
 	}
 
-	// Profile
-	profile := overrides.Profile
-
-	// daemon_id resolution: override > env > persistent UUID on disk.
-	// The persistent UUID is written once to `<profile-dir>/daemon.id` and
-	// then reused forever so hostname drift (.local suffix, system rename,
-	// mDNS state, profile switch) no longer mints a new runtime identity.
-	// Callers may still pin a specific id via MULTICA_DAEMON_ID or the
-	// override field (e.g. for tests or embedded environments).
-	daemonID := strings.TrimSpace(os.Getenv("MULTICA_DAEMON_ID"))
-	if overrides.DaemonID != "" {
-		daemonID = overrides.DaemonID
-	}
-	if daemonID == "" {
-		persisted, err := EnsureDaemonID(profile)
-		if err != nil {
-			return Config{}, fmt.Errorf("ensure daemon id: %w", err)
-		}
-		daemonID = persisted
-	}
 	// Historical daemon_ids derived from the current hostname/profile. The
 	// server uses these at register time to merge any pre-UUID runtime rows
 	// for this machine into the new UUID-keyed row and delete the stale ones.
