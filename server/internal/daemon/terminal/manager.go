@@ -238,10 +238,16 @@ func (m *Manager) openWith(info TaskInfo, p OpenParams) (*PtySession, error) {
 	m.mu.Unlock()
 
 	sess.onStop = m.cfg.OnSessionStop
-	sess.start()
+	// OnSessionStart MUST fire before sess.start(). waitLoop calls
+	// OnSessionStop when the child exits — if the child exits before
+	// OnSessionStart runs, daemon would unmark an env root it never
+	// marked, then mark it forever after OnSessionStart races in. The
+	// "start hook happens-before stop hook" contract is what makes the
+	// daemon's markActiveEnvRoot / unmark pair balanced.
 	if m.cfg.OnSessionStart != nil {
 		m.cfg.OnSessionStart(sess)
 	}
+	sess.start()
 	return sess, nil
 }
 

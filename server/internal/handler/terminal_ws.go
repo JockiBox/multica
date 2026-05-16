@@ -512,6 +512,23 @@ func (p *terminalProxy) writePump() {
 						p.exitMsg = ep.Reason
 					}
 					p.exitMu.Unlock()
+					// Finalize the audit row as soon as the daemon reports
+					// exit, not when the client disconnects. CloseTerminalSession
+					// is idempotent (WHERE ended_at IS NULL) so the browser_disconnect
+					// fallback in run()'s defer becomes a no-op if it fires later.
+					// Without this, a client that keeps the WS open after exit
+					// would leave terminal_sessions.ended_at NULL forever and
+					// `multica issue runs` would render an already-exited
+					// terminal as active.
+					sid := ep.SessionID
+					if sid == "" {
+						sid = p.SessionID()
+					}
+					reason := ep.Reason
+					if reason == "" {
+						reason = "exited"
+					}
+					p.audit.RecordClose(sid, int32(ep.ExitCode), true, reason)
 				}
 				continue
 			}

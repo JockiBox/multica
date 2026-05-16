@@ -133,7 +133,12 @@ func (c *APIClient) GetJSON(ctx context.Context, path string, out any) error {
 
 	if resp.StatusCode >= 400 {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("GET %s returned %d: %s", path, resp.StatusCode, strings.TrimSpace(string(data)))
+		return &HTTPError{
+			Method:     http.MethodGet,
+			Path:       path,
+			StatusCode: resp.StatusCode,
+			Body:       strings.TrimSpace(string(data)),
+		}
 	}
 	if out == nil {
 		return nil
@@ -159,7 +164,12 @@ func (c *APIClient) GetJSONWithHeaders(ctx context.Context, path string, out any
 
 	if resp.StatusCode >= 400 {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("GET %s returned %d: %s", path, resp.StatusCode, strings.TrimSpace(string(data)))
+		return nil, &HTTPError{
+			Method:     http.MethodGet,
+			Path:       path,
+			StatusCode: resp.StatusCode,
+			Body:       strings.TrimSpace(string(data)),
+		}
 	}
 	if out != nil {
 		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {

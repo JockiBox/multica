@@ -1073,9 +1073,16 @@ func runIssueRuns(cmd *cobra.Command, args []string) error {
 	// sandbox 的关系". The endpoint is new in MUL-2295 Phase 4; older
 	// servers return 404, which we treat as "no terminal feature" rather
 	// than a hard error so the CLI keeps working against pre-feature
-	// servers.
+	// servers. Any non-404 failure (500, auth, network) is surfaced to
+	// stderr so a real regression doesn't silently downgrade to "no
+	// terminal rows" — see Phase 4 review feedback.
 	var terminals []map[string]any
-	if err := client.GetJSON(ctx, "/api/issues/"+issueRef.ID+"/terminal-sessions", &terminals); err == nil {
+	if err := client.GetJSON(ctx, "/api/issues/"+issueRef.ID+"/terminal-sessions", &terminals); err != nil {
+		var httpErr *cli.HTTPError
+		if !errors.As(err, &httpErr) || httpErr.StatusCode != http.StatusNotFound {
+			fmt.Fprintf(os.Stderr, "warning: list terminal sessions: %v\n", err)
+		}
+	} else {
 		runs = append(runs, terminals...)
 	}
 	// Sort merged list newest-first by started_at so the table renders in

@@ -954,6 +954,57 @@ func TestManager_OnSessionHooksFireAroundDeregister(t *testing.T) {
 	}
 }
 
+// TestManager_OnSessionStartFiresBeforeStopOnImmediateExit guards against
+// the race Emacs flagged in the Phase 4 review: a child that exits
+// before sess.start() returns must still see OnSessionStart before
+// OnSessionStop. If the order inverts, the daemon's markActiveEnvRoot /
+// unmarkActiveEnvRoot pair becomes "unmark then mark", and the env
+// root stays pinned against GC forever.
+func TestManager_OnSessionStartFiresBeforeStopOnImmediateExit(t *testing.T) {
+	var seq atomic.Int32
+	var startSeq, stopSeq atomic.Int32
+
+	stopFired := make(chan struct{})
+	f := newFixture(t, func(c *ManagerConfig) {
+		c.OnSessionStart = func(*PtySession) {
+			// Sleep deliberately so any waitLoop already running has a
+			// chance to race ahead and fire OnSessionStop first if the
+			// ordering is wrong. The fix must guarantee OnSessionStart
+			// happens-before waitLoop starts.
+			time.Sleep(20 * time.Millisecond)
+			startSeq.Store(seq.Add(1))
+		}
+		c.OnSessionStop = func(*PtySession) {
+			stopSeq.Store(seq.Add(1))
+			close(stopFired)
+		}
+	})
+	// Spawn a PTY whose Wait() returns immediately by pre-closing waitDone.
+	// This simulates a shell that crashes / exits before sess.start() even
+	// schedules the read goroutine.
+	f.spawner.make = func(tt *testing.T, req SpawnRequest) (*fakePTY, error) {
+		p := newFakePTY(tt, req.Cols, req.Rows)
+		p.waitOnce.Do(func() { close(p.waitDone) })
+		return p, nil
+	}
+	defer f.mgr.Close()
+
+	if _, err := f.mgr.Open(context.Background(), OpenParams{TaskID: "task-1", WorkspaceID: "ws-A"}); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	select {
+	case <-stopFired:
+	case <-time.After(2 * time.Second):
+		t.Fatal("OnSessionStop never fired")
+	}
+	if got := startSeq.Load(); got == 0 {
+		t.Fatal("OnSessionStart never fired")
+	}
+	if startSeq.Load() >= stopSeq.Load() {
+		t.Fatalf("OnSessionStart (seq=%d) did not happen-before OnSessionStop (seq=%d) — GC unmark would pin the env root forever", startSeq.Load(), stopSeq.Load())
+	}
+}
+
 // TestManager_OnSessionStartNotFiredOnSpawnFailure makes sure the hook is
 // symmetric with the registration: if Spawn fails, OnSessionStart must
 // NOT fire (otherwise the daemon would mark an env root it never used,
