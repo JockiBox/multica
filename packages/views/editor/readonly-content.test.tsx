@@ -153,6 +153,23 @@ describe("ReadonlyContent Mermaid rendering", () => {
     );
   });
 
+  it("does not regress Mermaid unwrap after the HtmlBlockPreview branch was added", async () => {
+    // Both Mermaid and HtmlBlockPreview rely on react-markdown's `code`
+    // renderer returning a non-<code> React element, and on the `pre`
+    // renderer recognizing the element by reference and unwrapping it. If
+    // someone tightens the `pre` check to a single component, the other
+    // one quietly regresses into a `<pre>`-wrapped DOM. This test pins the
+    // contract.
+    const { container } = render(
+      <ReadonlyContent
+        content={["```mermaid", "graph LR", "  A --> B", "```"].join("\n")}
+      />,
+    );
+    expect(container.querySelector(".mermaid-diagram")).not.toBeNull();
+    // No outer <pre> envelope.
+    expect(container.querySelector("pre")).toBeNull();
+  });
+
   it("opens a fullscreen lightbox when the toolbar button is clicked", async () => {
     const { container } = render(
       <ReadonlyContent
@@ -184,5 +201,25 @@ describe("ReadonlyContent Mermaid rendering", () => {
     await waitFor(() => {
       expect(document.querySelector(".mermaid-diagram-lightbox")).toBeNull();
     });
+  });
+});
+
+describe("ReadonlyContent HTML block rendering", () => {
+  // `language=html` fenced blocks should default to a preview iframe with
+  // sandbox="allow-scripts" (chart JS executes in an opaque origin) and
+  // must NOT be wrapped by react-markdown's default <pre>, which would
+  // clamp the iframe with monospace / overflow styles. The two-layer
+  // code+pre unwrap mirror's Mermaid's pattern.
+  it("renders an iframe with sandbox='allow-scripts' for ```html and skips the outer <pre>", () => {
+    const { container } = render(
+      <ReadonlyContent
+        content={["```html", '<h1 id="x">hi</h1>', "```"].join("\n")}
+      />,
+    );
+    const frame = container.querySelector<HTMLIFrameElement>("iframe");
+    expect(frame).not.toBeNull();
+    expect(frame?.getAttribute("sandbox")).toBe("allow-scripts");
+    expect(frame?.getAttribute("srcdoc")).toContain('<h1 id="x">hi</h1>');
+    expect(container.querySelector("pre")).toBeNull();
   });
 });
