@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"sort"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -66,6 +68,36 @@ func commentToResponse(c db.Comment, reactions []ReactionResponse, attachments [
 // number of rows on a single issue.
 const commentHardCap = 2000
 
+// ListComments returns comments for an issue. The default behaviour is
+// unchanged — full chronological dump capped at commentHardCap — so existing
+// callers and the desktop UI keep working as-is. Three optional query params
+// give agent-style readers a thread-aware view that scales to long issues
+// without dragging every prior comment into context:
+//
+//   - thread=<comment-uuid> — return the root of the thread containing this
+//     comment plus every descendant. The anchor may be a root or any reply;
+//     the server walks up to the root via a recursive CTE, so callers do not
+//     need to know whether the id they have is a root.
+//   - recent=<N> — return the most recent N comments for the issue. Combine
+//     with before / before-id (composite cursor) to scroll further back.
+//   - before=<RFC3339> + before-id=<uuid> — composite cursor for stable
+//     pagination under the existing (created_at ASC, id ASC) total order.
+//     Both must be set or neither; plain time-only `before` is rejected
+//     because rows sharing a microsecond can otherwise be skipped or
+//     duplicated.
+//
+// Combination rules (kept narrow on purpose — Elon flagged the matrix risk):
+//
+//   - thread is exclusive with recent and before/before-id. Asking for "the
+//     most recent N within thread X" or "thread X but only before T" mixes
+//     two different navigation models and is rejected with 400.
+//   - thread may combine with since (incremental polling of one thread).
+//   - recent may combine with before/before-id (scroll older) and with since
+//     (recent activity in a window).
+//   - since may combine with anything except (thread + recent / before).
+//
+// The response is always chronological (oldest → newest), even when the
+// underlying query orders DESC, so agents can feed it to a prompt verbatim.
 func (h *Handler) ListComments(w http.ResponseWriter, r *http.Request) {
 	issueID := chi.URLParam(r, "id")
 	issue, ok := h.loadIssueForUser(w, r, issueID)
@@ -73,39 +105,102 @@ func (h *Handler) ListComments(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Only `since` is honoured — used by the CLI's `--since` agent-polling
-	// flow to fetch incremental comments. The previous limit/offset cursor
-	// was ripped out (#1929): time-based pagination breaks reply threads,
-	// and at the actual data sizes there is no win from paging.
+	q := r.URL.Query()
+
 	var sinceTime pgtype.Timestamptz
-	if v := r.URL.Query().Get("since"); v != "" {
-		t, err := time.Parse(time.RFC3339, v)
+	if v := q.Get("since"); v != "" {
+		t, err := time.Parse(time.RFC3339Nano, v)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid since parameter; expected RFC3339 format")
-			return
+			// Fall back to RFC3339 for backwards-compat with the original CLI.
+			t, err = time.Parse(time.RFC3339, v)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "invalid since parameter; expected RFC3339 format")
+				return
+			}
 		}
 		sinceTime = pgtype.Timestamptz{Time: t, Valid: true}
 	}
 
-	var comments []db.Comment
-	var err error
-	if sinceTime.Valid {
-		comments, err = h.Queries.ListCommentsSinceForIssue(r.Context(), db.ListCommentsSinceForIssueParams{
-			IssueID:     issue.ID,
-			WorkspaceID: issue.WorkspaceID,
-			CreatedAt:   sinceTime,
-			Limit:       commentHardCap,
-		})
-	} else {
-		comments, err = h.Queries.ListCommentsForIssue(r.Context(), db.ListCommentsForIssueParams{
-			IssueID:     issue.ID,
-			WorkspaceID: issue.WorkspaceID,
-			Limit:       commentHardCap,
-		})
+	threadStr := q.Get("thread")
+	recentStr := q.Get("recent")
+	beforeTimeStr := q.Get("before")
+	beforeIDStr := q.Get("before_id")
+	if beforeIDStr == "" {
+		// Accept hyphenated alias to match CLI flag convention.
+		beforeIDStr = q.Get("before-id")
 	}
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list comments")
+
+	// --- combination validation ----------------------------------------
+	if threadStr != "" && recentStr != "" {
+		writeError(w, http.StatusBadRequest, "thread and recent are mutually exclusive")
 		return
+	}
+	if threadStr != "" && (beforeTimeStr != "" || beforeIDStr != "") {
+		writeError(w, http.StatusBadRequest, "thread cannot be combined with before / before_id")
+		return
+	}
+	if (beforeTimeStr == "") != (beforeIDStr == "") {
+		writeError(w, http.StatusBadRequest, "before and before_id must be set together (composite cursor)")
+		return
+	}
+
+	// --- parse cursor / recent ----------------------------------------
+	var beforeCursor pgtype.Timestamptz
+	var beforeUUID pgtype.UUID
+	hasCursor := false
+	if beforeTimeStr != "" {
+		t, err := time.Parse(time.RFC3339Nano, beforeTimeStr)
+		if err != nil {
+			t, err = time.Parse(time.RFC3339, beforeTimeStr)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "invalid before parameter; expected RFC3339 format")
+				return
+			}
+		}
+		beforeCursor = pgtype.Timestamptz{Time: t, Valid: true}
+		uuid, perr := util.ParseUUID(beforeIDStr)
+		if perr != nil {
+			writeError(w, http.StatusBadRequest, "invalid before_id parameter; expected UUID")
+			return
+		}
+		beforeUUID = uuid
+		hasCursor = true
+	}
+
+	recentN := 0
+	if recentStr != "" {
+		n, err := strconv.Atoi(recentStr)
+		if err != nil || n <= 0 {
+			writeError(w, http.StatusBadRequest, "invalid recent parameter; expected positive integer")
+			return
+		}
+		if n > commentHardCap {
+			n = commentHardCap
+		}
+		recentN = n
+	}
+
+	comments, err := h.fetchCommentsForList(r.Context(), fetchCommentsArgs{
+		Issue:        issue,
+		Since:        sinceTime,
+		ThreadAnchor: threadStr,
+		RecentN:      recentN,
+		HasCursor:    hasCursor,
+		BeforeAt:     beforeCursor,
+		BeforeID:     beforeUUID,
+	})
+	if err != nil {
+		switch err {
+		case errCommentThreadNotFound:
+			writeError(w, http.StatusNotFound, "thread anchor not found in this issue")
+			return
+		case errCommentThreadBadID:
+			writeError(w, http.StatusBadRequest, "invalid thread parameter; expected UUID")
+			return
+		default:
+			writeError(w, http.StatusInternalServerError, "failed to list comments")
+			return
+		}
 	}
 
 	commentIDs := make([]pgtype.UUID, len(comments))
@@ -122,6 +217,128 @@ func (h *Handler) ListComments(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// fetchCommentsArgs bundles the parsed query params so fetchCommentsForList
+// stays readable. Sentinel errors below let the caller turn DB-layer outcomes
+// into the right HTTP status without leaking SQL details.
+type fetchCommentsArgs struct {
+	Issue        db.Issue
+	Since        pgtype.Timestamptz
+	ThreadAnchor string
+	RecentN      int
+	HasCursor    bool
+	BeforeAt     pgtype.Timestamptz
+	BeforeID     pgtype.UUID
+}
+
+var (
+	errCommentThreadNotFound = &commentFetchError{"thread anchor not found"}
+	errCommentThreadBadID    = &commentFetchError{"invalid thread anchor id"}
+)
+
+type commentFetchError struct{ msg string }
+
+func (e *commentFetchError) Error() string { return e.msg }
+
+func (h *Handler) fetchCommentsForList(ctx context.Context, args fetchCommentsArgs) ([]db.Comment, error) {
+	issue := args.Issue
+
+	// Thread-scoped read. Server resolves the anchor → root via recursive
+	// CTE, so we don't have to assume two-layer flat threads here.
+	if args.ThreadAnchor != "" {
+		anchor, err := util.ParseUUID(args.ThreadAnchor)
+		if err != nil {
+			return nil, errCommentThreadBadID
+		}
+		rows, err := h.Queries.ListThreadCommentsForIssue(ctx, db.ListThreadCommentsForIssueParams{
+			AnchorID:    anchor,
+			IssueID:     issue.ID,
+			WorkspaceID: issue.WorkspaceID,
+			RowLimit:    commentHardCap,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if len(rows) == 0 {
+			return nil, errCommentThreadNotFound
+		}
+		out := make([]db.Comment, 0, len(rows))
+		for _, r := range rows {
+			if args.Since.Valid && !r.CreatedAt.Time.After(args.Since.Time) {
+				continue
+			}
+			out = append(out, db.Comment{
+				ID:             r.ID,
+				IssueID:        r.IssueID,
+				AuthorType:     r.AuthorType,
+				AuthorID:       r.AuthorID,
+				Content:        r.Content,
+				Type:           r.Type,
+				CreatedAt:      r.CreatedAt,
+				UpdatedAt:      r.UpdatedAt,
+				ParentID:       r.ParentID,
+				WorkspaceID:    r.WorkspaceID,
+				ResolvedAt:     r.ResolvedAt,
+				ResolvedByType: r.ResolvedByType,
+				ResolvedByID:   r.ResolvedByID,
+			})
+		}
+		return out, nil
+	}
+
+	// Recent-N read, optionally bounded by composite cursor.
+	if args.RecentN > 0 {
+		rows, err := h.Queries.ListRecentCommentsForIssue(ctx, db.ListRecentCommentsForIssueParams{
+			IssueID:         issue.ID,
+			WorkspaceID:     issue.WorkspaceID,
+			HasCursor:       args.HasCursor,
+			BeforeCreatedAt: args.BeforeAt,
+			BeforeID:        args.BeforeID,
+			RowLimit:        int32(args.RecentN),
+		})
+		if err != nil {
+			return nil, err
+		}
+		// Optional since filter on top of recent — answers "what's new in
+		// the last N" without pulling the full timeline.
+		if args.Since.Valid {
+			filtered := rows[:0]
+			for _, c := range rows {
+				if c.CreatedAt.Time.After(args.Since.Time) {
+					filtered = append(filtered, c)
+				}
+			}
+			rows = filtered
+		}
+		// DESC → chronological so the response shape matches the default
+		// path. Callers can always re-sort, but giving them the same order
+		// as the existing endpoint avoids surprises.
+		sort.Slice(rows, func(i, j int) bool {
+			a, b := rows[i].CreatedAt.Time, rows[j].CreatedAt.Time
+			if !a.Equal(b) {
+				return a.Before(b)
+			}
+			return uuidToString(rows[i].ID) < uuidToString(rows[j].ID)
+		})
+		return rows, nil
+	}
+
+	// Default + since paths preserved verbatim (no behavioural change for
+	// existing callers).
+	if args.Since.Valid {
+		return h.Queries.ListCommentsSinceForIssue(ctx, db.ListCommentsSinceForIssueParams{
+			IssueID:     issue.ID,
+			WorkspaceID: issue.WorkspaceID,
+			CreatedAt:   args.Since,
+			Limit:       commentHardCap,
+		})
+	}
+	return h.Queries.ListCommentsForIssue(ctx, db.ListCommentsForIssueParams{
+		IssueID:     issue.ID,
+		WorkspaceID: issue.WorkspaceID,
+		Limit:       commentHardCap,
+	})
 }
 
 type CreateCommentRequest struct {

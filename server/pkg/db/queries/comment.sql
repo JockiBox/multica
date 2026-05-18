@@ -15,6 +15,68 @@ WHERE issue_id = $1 AND workspace_id = $2 AND created_at > $3
 ORDER BY created_at ASC, id ASC
 LIMIT $4;
 
+-- name: ListThreadCommentsForIssue :many
+-- Returns the root of the thread containing @anchor_id plus every descendant
+-- (recursive — defends against any future deeper nesting; today's data is two
+-- layers because the CreateComment path collapses replies to root, but the
+-- schema does not enforce that). @anchor_id may itself be a root or a reply.
+-- Output is chronological so it can be fed straight to the agent.
+WITH RECURSIVE root_of AS (
+    -- Walk up from the anchor until parent_id IS NULL.
+    SELECT c.id, c.parent_id
+    FROM comment c
+    WHERE c.id = @anchor_id AND c.issue_id = @issue_id AND c.workspace_id = @workspace_id
+    UNION ALL
+    SELECT p.id, p.parent_id
+    FROM comment p
+    JOIN root_of r ON p.id = r.parent_id
+),
+thread_root AS (
+    SELECT id FROM root_of WHERE parent_id IS NULL LIMIT 1
+),
+descendants AS (
+    -- Start from the root, then keep adding any comment whose parent is
+    -- already in the set. Cycle-safe under PK constraint (a comment cannot
+    -- be its own ancestor).
+    SELECT c.id, c.issue_id, c.author_type, c.author_id, c.content, c.type,
+           c.created_at, c.updated_at, c.parent_id, c.workspace_id,
+           c.resolved_at, c.resolved_by_type, c.resolved_by_id
+    FROM comment c
+    JOIN thread_root tr ON c.id = tr.id
+    UNION
+    SELECT c.id, c.issue_id, c.author_type, c.author_id, c.content, c.type,
+           c.created_at, c.updated_at, c.parent_id, c.workspace_id,
+           c.resolved_at, c.resolved_by_type, c.resolved_by_id
+    FROM comment c
+    JOIN descendants d ON c.parent_id = d.id
+    WHERE c.issue_id = @issue_id AND c.workspace_id = @workspace_id
+)
+SELECT id, issue_id, author_type, author_id, content, type,
+       created_at, updated_at, parent_id, workspace_id,
+       resolved_at, resolved_by_type, resolved_by_id
+FROM descendants
+ORDER BY created_at ASC, id ASC
+LIMIT @row_limit;
+
+-- name: ListRecentCommentsForIssue :many
+-- Returns the most recent N comments for an issue, optionally bounded above
+-- by a (created_at, id) cursor. The composite cursor avoids the
+-- same-timestamp duplicate/skip risk that plain `created_at < $x` has under
+-- the existing (created_at ASC, id ASC) ordering. Pass @has_cursor = FALSE
+-- and the cursor params are ignored (returns the absolute newest N).
+SELECT id, issue_id, author_type, author_id, content, type,
+       created_at, updated_at, parent_id, workspace_id,
+       resolved_at, resolved_by_type, resolved_by_id
+FROM comment
+WHERE issue_id = @issue_id
+  AND workspace_id = @workspace_id
+  AND (
+      @has_cursor::boolean = FALSE
+      OR (created_at, id) < (@before_created_at::timestamptz, @before_id::uuid)
+  )
+ORDER BY created_at DESC, id DESC
+LIMIT @row_limit;
+
 -- name: CountComments :one
 SELECT count(*) FROM comment
 WHERE issue_id = $1 AND workspace_id = $2;

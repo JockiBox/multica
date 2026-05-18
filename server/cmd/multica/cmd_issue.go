@@ -309,6 +309,10 @@ func init() {
 	// issue comment list
 	issueCommentListCmd.Flags().String("output", "table", "Output format: table or json")
 	issueCommentListCmd.Flags().String("since", "", "Only return comments created after this timestamp (RFC3339)")
+	issueCommentListCmd.Flags().String("thread", "", "Comment UUID — return the thread containing this comment (root + every descendant). May be a root or a reply id.")
+	issueCommentListCmd.Flags().Int("recent", 0, "Return only the most recent N comments for the issue. Combine with --before/--before-id to scroll older.")
+	issueCommentListCmd.Flags().String("before", "", "RFC3339 cursor for --recent pagination. Must be paired with --before-id (composite cursor).")
+	issueCommentListCmd.Flags().String("before-id", "", "Comment UUID cursor for --recent pagination. Must be paired with --before.")
 
 	// issue runs
 	issueRunsCmd.Flags().String("output", "table", "Output format: table or json")
@@ -921,9 +925,38 @@ func runIssueCommentList(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("resolve issue: %w", err)
 	}
 
+	since, _ := cmd.Flags().GetString("since")
+	thread, _ := cmd.Flags().GetString("thread")
+	recent, _ := cmd.Flags().GetInt("recent")
+	before, _ := cmd.Flags().GetString("before")
+	beforeID, _ := cmd.Flags().GetString("before-id")
+
+	// Mirror the server-side combination rules client-side so the user gets
+	// a clear local error instead of a 400 round-trip. These match the
+	// validation in handler.ListComments (server/internal/handler/comment.go).
+	if thread != "" && recent > 0 {
+		return fmt.Errorf("--thread and --recent are mutually exclusive")
+	}
+	if thread != "" && (before != "" || beforeID != "") {
+		return fmt.Errorf("--thread cannot be combined with --before / --before-id")
+	}
+	if (before == "") != (beforeID == "") {
+		return fmt.Errorf("--before and --before-id must be set together (composite cursor for stable pagination)")
+	}
+
 	params := url.Values{}
-	if v, _ := cmd.Flags().GetString("since"); v != "" {
-		params.Set("since", v)
+	if since != "" {
+		params.Set("since", since)
+	}
+	if thread != "" {
+		params.Set("thread", thread)
+	}
+	if recent > 0 {
+		params.Set("recent", fmt.Sprintf("%d", recent))
+	}
+	if before != "" {
+		params.Set("before", before)
+		params.Set("before_id", beforeID)
 	}
 
 	path := "/api/issues/" + issueRef.ID + "/comments"

@@ -287,6 +287,182 @@ func (q *Queries) ListCommentsSinceForIssue(ctx context.Context, arg ListComment
 	return items, nil
 }
 
+const listRecentCommentsForIssue = `-- name: ListRecentCommentsForIssue :many
+SELECT id, issue_id, author_type, author_id, content, type,
+       created_at, updated_at, parent_id, workspace_id,
+       resolved_at, resolved_by_type, resolved_by_id
+FROM comment
+WHERE issue_id = $1
+  AND workspace_id = $2
+  AND (
+      $3::boolean = FALSE
+      OR (created_at, id) < ($4::timestamptz, $5::uuid)
+  )
+ORDER BY created_at DESC, id DESC
+LIMIT $6
+`
+
+type ListRecentCommentsForIssueParams struct {
+	IssueID         pgtype.UUID        `json:"issue_id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	HasCursor       bool               `json:"has_cursor"`
+	BeforeCreatedAt pgtype.Timestamptz `json:"before_created_at"`
+	BeforeID        pgtype.UUID        `json:"before_id"`
+	RowLimit        int32              `json:"row_limit"`
+}
+
+// Returns the most recent N comments for an issue, optionally bounded above
+// by a (created_at, id) cursor. The composite cursor avoids the
+// same-timestamp duplicate/skip risk that plain `created_at < $x` has under
+// the existing (created_at ASC, id ASC) ordering. Pass @has_cursor = FALSE
+// and the cursor params are ignored (returns the absolute newest N).
+func (q *Queries) ListRecentCommentsForIssue(ctx context.Context, arg ListRecentCommentsForIssueParams) ([]Comment, error) {
+	rows, err := q.db.Query(ctx, listRecentCommentsForIssue,
+		arg.IssueID,
+		arg.WorkspaceID,
+		arg.HasCursor,
+		arg.BeforeCreatedAt,
+		arg.BeforeID,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Comment{}
+	for rows.Next() {
+		var i Comment
+		if err := rows.Scan(
+			&i.ID,
+			&i.IssueID,
+			&i.AuthorType,
+			&i.AuthorID,
+			&i.Content,
+			&i.Type,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ParentID,
+			&i.WorkspaceID,
+			&i.ResolvedAt,
+			&i.ResolvedByType,
+			&i.ResolvedByID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listThreadCommentsForIssue = `-- name: ListThreadCommentsForIssue :many
+WITH RECURSIVE root_of AS (
+    -- Walk up from the anchor until parent_id IS NULL.
+    SELECT c.id, c.parent_id
+    FROM comment c
+    WHERE c.id = $2 AND c.issue_id = $3 AND c.workspace_id = $4
+    UNION ALL
+    SELECT p.id, p.parent_id
+    FROM comment p
+    JOIN root_of r ON p.id = r.parent_id
+),
+thread_root AS (
+    SELECT id FROM root_of WHERE parent_id IS NULL LIMIT 1
+),
+descendants AS (
+    -- Start from the root, then keep adding any comment whose parent is
+    -- already in the set. Cycle-safe under PK constraint (a comment cannot
+    -- be its own ancestor).
+    SELECT c.id, c.issue_id, c.author_type, c.author_id, c.content, c.type,
+           c.created_at, c.updated_at, c.parent_id, c.workspace_id,
+           c.resolved_at, c.resolved_by_type, c.resolved_by_id
+    FROM comment c
+    JOIN thread_root tr ON c.id = tr.id
+    UNION
+    SELECT c.id, c.issue_id, c.author_type, c.author_id, c.content, c.type,
+           c.created_at, c.updated_at, c.parent_id, c.workspace_id,
+           c.resolved_at, c.resolved_by_type, c.resolved_by_id
+    FROM comment c
+    JOIN descendants d ON c.parent_id = d.id
+    WHERE c.issue_id = $3 AND c.workspace_id = $4
+)
+SELECT id, issue_id, author_type, author_id, content, type,
+       created_at, updated_at, parent_id, workspace_id,
+       resolved_at, resolved_by_type, resolved_by_id
+FROM descendants
+ORDER BY created_at ASC, id ASC
+LIMIT $1
+`
+
+type ListThreadCommentsForIssueParams struct {
+	RowLimit    int32       `json:"row_limit"`
+	AnchorID    pgtype.UUID `json:"anchor_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+type ListThreadCommentsForIssueRow struct {
+	ID             pgtype.UUID        `json:"id"`
+	IssueID        pgtype.UUID        `json:"issue_id"`
+	AuthorType     string             `json:"author_type"`
+	AuthorID       pgtype.UUID        `json:"author_id"`
+	Content        string             `json:"content"`
+	Type           string             `json:"type"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+	ParentID       pgtype.UUID        `json:"parent_id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	ResolvedAt     pgtype.Timestamptz `json:"resolved_at"`
+	ResolvedByType pgtype.Text        `json:"resolved_by_type"`
+	ResolvedByID   pgtype.UUID        `json:"resolved_by_id"`
+}
+
+// Returns the root of the thread containing @anchor_id plus every descendant
+// (recursive — defends against any future deeper nesting; today's data is two
+// layers because the CreateComment path collapses replies to root, but the
+// schema does not enforce that). @anchor_id may itself be a root or a reply.
+// Output is chronological so it can be fed straight to the agent.
+func (q *Queries) ListThreadCommentsForIssue(ctx context.Context, arg ListThreadCommentsForIssueParams) ([]ListThreadCommentsForIssueRow, error) {
+	rows, err := q.db.Query(ctx, listThreadCommentsForIssue,
+		arg.RowLimit,
+		arg.AnchorID,
+		arg.IssueID,
+		arg.WorkspaceID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListThreadCommentsForIssueRow{}
+	for rows.Next() {
+		var i ListThreadCommentsForIssueRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.IssueID,
+			&i.AuthorType,
+			&i.AuthorID,
+			&i.Content,
+			&i.Type,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ParentID,
+			&i.WorkspaceID,
+			&i.ResolvedAt,
+			&i.ResolvedByType,
+			&i.ResolvedByID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const resolveComment = `-- name: ResolveComment :one
 UPDATE comment SET
     resolved_at = COALESCE(resolved_at, now()),
