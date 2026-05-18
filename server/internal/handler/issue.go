@@ -200,24 +200,33 @@ type SearchIssueResponse struct {
 // extractSnippet extracts a snippet of text around the first occurrence of query.
 // Returns up to ~120 runes centered on the match. Uses rune-based slicing to
 // avoid splitting multi-byte UTF-8 characters (important for CJK content).
+// For multi-word queries, tries phrase match first; if not found, locates the
+// earliest occurring individual term and centers the snippet around it.
 func extractSnippet(content, query string) string {
 	runes := []rune(content)
 	lowerRunes := []rune(strings.ToLower(content))
 	queryRunes := []rune(strings.ToLower(query))
 
-	idx := -1
-	if len(queryRunes) > 0 && len(lowerRunes) >= len(queryRunes) {
-		for i := 0; i <= len(lowerRunes)-len(queryRunes); i++ {
-			match := true
-			for j := range queryRunes {
-				if lowerRunes[i+j] != queryRunes[j] {
-					match = false
-					break
+	idx := findRuneSubstring(lowerRunes, queryRunes)
+
+	// If phrase not found, try individual terms for multi-word queries.
+	matchLen := len(queryRunes)
+	if idx < 0 {
+		terms := strings.Fields(strings.ToLower(query))
+		if len(terms) > 1 {
+			earliest := -1
+			earliestLen := 0
+			for _, term := range terms {
+				termRunes := []rune(term)
+				pos := findRuneSubstring(lowerRunes, termRunes)
+				if pos >= 0 && (earliest < 0 || pos < earliest) {
+					earliest = pos
+					earliestLen = len(termRunes)
 				}
 			}
-			if match {
-				idx = i
-				break
+			if earliest >= 0 {
+				idx = earliest
+				matchLen = earliestLen
 			}
 		}
 	}
@@ -232,7 +241,7 @@ func extractSnippet(content, query string) string {
 	if start < 0 {
 		start = 0
 	}
-	end := idx + len(queryRunes) + 80
+	end := idx + matchLen + 80
 	if end > len(runes) {
 		end = len(runes)
 	}
@@ -244,6 +253,26 @@ func extractSnippet(content, query string) string {
 		snippet = snippet + "..."
 	}
 	return snippet
+}
+
+// findRuneSubstring returns the index of needle in haystack, or -1 if not found.
+func findRuneSubstring(haystack, needle []rune) int {
+	if len(needle) == 0 || len(haystack) < len(needle) {
+		return -1
+	}
+	for i := 0; i <= len(haystack)-len(needle); i++ {
+		match := true
+		for j := range needle {
+			if haystack[i+j] != needle[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return i
+		}
+	}
+	return -1
 }
 
 // descriptionContains checks if the description text contains the search phrase or all terms.
