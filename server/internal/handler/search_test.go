@@ -236,14 +236,22 @@ func TestBuildSearchQuery_DescriptionRankTiers(t *testing.T) {
 func TestBuildSearchQuery_SingleTermNoAllTermTiers(t *testing.T) {
 	query, _ := buildSearchQuery("html", []string{"html"}, 0, false, false)
 
+	// Extract the rank CASE expression (ends with "ELSE 9 END") to avoid
+	// false matches against statusRank which also contains THEN 4/6.
+	rankEnd := strings.Index(query, "ELSE 9 END")
+	if rankEnd == -1 {
+		t.Fatal("query should contain rank expression with ELSE 9 END")
+	}
+	rankExpr := query[:rankEnd]
+
 	// Single-term queries should NOT have tier 4 (title all-terms), 6 (desc all-terms), or 8 (comment all-terms)
-	if strings.Contains(query, "THEN 4") {
+	if strings.Contains(rankExpr, "THEN 4") {
 		t.Error("single-term query should not have tier 4 (title all-terms)")
 	}
-	if strings.Contains(query, "THEN 6") {
+	if strings.Contains(rankExpr, "THEN 6") {
 		t.Error("single-term query should not have tier 6 (description all-terms)")
 	}
-	if strings.Contains(query, "THEN 8") {
+	if strings.Contains(rankExpr, "THEN 8") {
 		t.Error("single-term query should not have tier 8 (comment all-terms)")
 	}
 }
