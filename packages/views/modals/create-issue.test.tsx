@@ -1,6 +1,6 @@
 import { forwardRef, useImperativeHandle, useRef, useState, type ReactNode } from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nProvider } from "@multica/core/i18n/react";
@@ -321,7 +321,9 @@ describe("CreateIssueModal", () => {
 
     renderModal(<CreateIssueModal onClose={onClose} />);
 
-    await user.type(screen.getByPlaceholderText("Issue title"), "  Ship create issue regression coverage  ");
+    fireEvent.change(screen.getByPlaceholderText("Issue title"), {
+      target: { value: "  Ship create issue regression coverage  " },
+    });
     await user.click(screen.getByRole("button", { name: "Create Issue" }));
 
     await waitFor(() => {
