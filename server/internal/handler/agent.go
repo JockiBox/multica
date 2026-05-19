@@ -757,7 +757,12 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// thinking_level handling (MUL-2339). Tri-state semantics:
-	//   - field omitted  → leave column alone (COALESCE narg)
+	//   - field omitted  → leave column alone (COALESCE narg), but if a
+	//     runtime change in this same request would make the *existing*
+	//     value literal-invalid for the new provider, reject 400. This
+	//     closes the gap Elon's review flagged: previously, switching a
+	//     Claude agent storing `max` to a Codex runtime would silently
+	//     keep `max` and forward it to the daemon.
 	//   - field set to "" → explicit clear (run ClearAgentThinkingLevel post-update)
 	//   - field set to value → validate against the target runtime's provider
 	//     enum; reject literal-invalid with 400. Per-model combination checks
@@ -782,6 +787,26 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			params.ThinkingLevel = pgtype.Text{String: value, Valid: true}
+		}
+	} else if req.RuntimeID != nil && existing.ThinkingLevel.Valid && existing.ThinkingLevel.String != "" {
+		// Runtime is changing but the caller didn't touch thinking_level.
+		// If the existing value is not in the new provider's enum at all,
+		// preserving it would smuggle a literal-invalid token to the daemon.
+		// Hold the same line as the explicit-set path: always 400 on
+		// literal-invalid, never silently coerce. The caller can either
+		// pass `thinking_level: ""` to clear or pick a value valid for the
+		// new runtime.
+		provider, ok := h.resolveAgentProvider(r, existing.WorkspaceID, targetRuntimeID)
+		if !ok {
+			writeError(w, http.StatusInternalServerError, "failed to resolve runtime for thinking_level validation")
+			return
+		}
+		if !agent.IsKnownThinkingValue(provider, existing.ThinkingLevel.String) {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf(
+				"existing thinking_level %q is not valid for runtime %q; pass thinking_level=\"\" to clear or set a value valid for the new runtime",
+				existing.ThinkingLevel.String, provider,
+			))
+			return
 		}
 	}
 

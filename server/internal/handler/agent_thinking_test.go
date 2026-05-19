@@ -186,6 +186,138 @@ func TestUpdateAgent_ThinkingLevel_TriState(t *testing.T) {
 	})
 }
 
+// TestUpdateAgent_RuntimeSwitch_PreservesValidValueRejectsInvalid covers
+// the gap Elon flagged in PR1 review: a PATCH that switches `runtime_id`
+// without explicitly touching `thinking_level` used to silently keep
+// the existing value, so a Claude agent storing `max` could land on a
+// Codex runtime where `max` is not a recognised token at all, and the
+// daemon would receive a literal-invalid level.
+//
+// The contract the test pins, matching the existing "always 400 on
+// literal-invalid" rule:
+//
+//   - existing value still valid for the new runtime → 200, value kept
+//   - existing value invalid for the new runtime → 400, never silent
+//     clear or coerce
+//   - caller can recover by re-sending with `thinking_level: ""` to clear
+//     in the same PATCH
+func TestUpdateAgent_RuntimeSwitch_PreservesValidValueRejectsInvalid(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	ctx := context.Background()
+	claudeRuntimeID := createClaudeProviderRuntime(t)
+	codexRuntimeID := createCodexProviderRuntime(t)
+
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM agent WHERE workspace_id = $1 AND name LIKE 'runtime-switch-%'`, testWorkspaceID)
+	})
+
+	t.Run("existing value still valid for new runtime is kept", func(t *testing.T) {
+		// `high` is valid for both Claude and Codex enums — switching
+		// runtime without touching thinking_level should keep it.
+		agentID := createAgentOnRuntime(t, "runtime-switch-keep", claudeRuntimeID, "high")
+		body := map[string]any{
+			"runtime_id": codexRuntimeID,
+		}
+		w := httptest.NewRecorder()
+		req := withURLParam(newRequest(http.MethodPatch, "/api/agents/"+agentID, body), "id", agentID)
+		testHandler.UpdateAgent(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 when existing value is still valid, got %d: %s", w.Code, w.Body.String())
+		}
+		var resp map[string]any
+		_ = json.NewDecoder(w.Body).Decode(&resp)
+		if resp["thinking_level"] != "high" {
+			t.Errorf("expected thinking_level=high preserved across runtime switch, got %v", resp["thinking_level"])
+		}
+	})
+
+	t.Run("existing value invalid for new runtime is 400, not silent", func(t *testing.T) {
+		// `max` is Claude-only; switching to Codex must NOT silently
+		// keep it. Behaviour stays consistent with the explicit-set
+		// path: always 400 on literal-invalid.
+		agentID := createAgentOnRuntime(t, "runtime-switch-reject", claudeRuntimeID, "max")
+		body := map[string]any{
+			"runtime_id": codexRuntimeID,
+		}
+		w := httptest.NewRecorder()
+		req := withURLParam(newRequest(http.MethodPatch, "/api/agents/"+agentID, body), "id", agentID)
+		testHandler.UpdateAgent(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 when existing value is invalid for new runtime, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("simultaneous explicit clear lets the switch through", func(t *testing.T) {
+		// The 400 above is recoverable: pass `thinking_level: ""` in
+		// the same PATCH and the switch goes through with a cleared
+		// value. This is the documented escape hatch in the error
+		// message; the test pins it so the contract holds.
+		agentID := createAgentOnRuntime(t, "runtime-switch-clear", claudeRuntimeID, "max")
+		body := map[string]any{
+			"runtime_id":     codexRuntimeID,
+			"thinking_level": "",
+		}
+		w := httptest.NewRecorder()
+		req := withURLParam(newRequest(http.MethodPatch, "/api/agents/"+agentID, body), "id", agentID)
+		testHandler.UpdateAgent(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 with simultaneous clear, got %d: %s", w.Code, w.Body.String())
+		}
+		var resp map[string]any
+		_ = json.NewDecoder(w.Body).Decode(&resp)
+		if resp["thinking_level"] != "" {
+			t.Errorf("expected thinking_level cleared, got %v", resp["thinking_level"])
+		}
+	})
+
+	t.Run("simultaneous explicit set to valid value lets the switch through", func(t *testing.T) {
+		// The other recovery: caller picks a value valid for the new
+		// runtime. Same PATCH, no need for a separate roundtrip.
+		agentID := createAgentOnRuntime(t, "runtime-switch-replace", claudeRuntimeID, "max")
+		body := map[string]any{
+			"runtime_id":     codexRuntimeID,
+			"thinking_level": "minimal",
+		}
+		w := httptest.NewRecorder()
+		req := withURLParam(newRequest(http.MethodPatch, "/api/agents/"+agentID, body), "id", agentID)
+		testHandler.UpdateAgent(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 with simultaneous set, got %d: %s", w.Code, w.Body.String())
+		}
+		var resp map[string]any
+		_ = json.NewDecoder(w.Body).Decode(&resp)
+		if resp["thinking_level"] != "minimal" {
+			t.Errorf("expected thinking_level=minimal, got %v", resp["thinking_level"])
+		}
+	})
+}
+
+// createCodexProviderRuntime mirrors createClaudeProviderRuntime but for
+// the codex provider, so runtime-switch tests can exercise a real
+// cross-provider transition.
+func createCodexProviderRuntime(t *testing.T) string {
+	t.Helper()
+	var runtimeID string
+	err := testPool.QueryRow(context.Background(), `
+		INSERT INTO agent_runtime (
+			workspace_id, daemon_id, name, runtime_mode, provider, status,
+			device_info, metadata, last_seen_at, owner_id
+		)
+		VALUES ($1, NULL, $2, 'cloud', 'codex', 'online', $3, '{}'::jsonb, now(), $4)
+		RETURNING id
+	`, testWorkspaceID, "Codex Thinking Runtime", "Codex thinking-level test runtime", testUserID).Scan(&runtimeID)
+	if err != nil {
+		t.Fatalf("create codex runtime: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM agent_runtime WHERE id = $1`, runtimeID)
+	})
+	return runtimeID
+}
+
 // createClaudeProviderRuntime stands up a runtime row with provider
 // "claude" so the thinking_level gate runs against the real Claude
 // enum (the default test runtime uses a fake provider). The runtime
