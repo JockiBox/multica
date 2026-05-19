@@ -221,13 +221,22 @@ func projectClaudeLevels(superset []string, allow map[string]bool) []ThinkingLev
 
 // ── Codex ────────────────────────────────────────────────────────────
 //
-// `codex debug models --output json` is the structured discovery hook
-// Elon's review flagged. It returns the per-model reasoning catalog
-// directly, including the model's documented default. We prefer this
-// over the older config-error probe trick because:
+// `codex debug models` is the structured discovery hook Elon's review
+// flagged. It returns the per-model reasoning catalog directly,
+// including the model's documented default. We prefer this over the
+// older config-error probe trick because:
 //   1. It gives us per-model subsets without hand-maintained tables.
 //   2. The schema is stable across CLI versions (Codex 0.131.0+).
 //   3. It doesn't pollute stderr with an intentional misconfiguration.
+//
+// The subcommand emits JSON on stdout by default — there is no
+// `--output json` flag (a prior version of this code passed one and
+// silently failed on 0.131.0). We add `--bundled` to skip the network
+// refresh: discovery runs on every daemon poll and a network hop here
+// would block the picker behind whatever the user's connection allows.
+// The bundled catalog is what determines which `model_reasoning_effort`
+// tokens the local binary actually accepts, which is the only thing we
+// need for validation.
 //
 // On older Codex versions / failures, the picker just disappears for
 // that model rather than offering a wrong list.
@@ -293,8 +302,16 @@ func loadCodexThinkingByModel(ctx context.Context, executablePath string) map[st
 	return parsed
 }
 
+// codexDebugModelsArgs is the argv we pass to discover the local Codex
+// catalog. Kept as a package-level var (not a literal at the call site)
+// so tests can assert the exact form a real `codex` invocation receives,
+// not just the parser behavior on a fixture string. The argv shape is
+// the contract that broke under PR1 review; the test that pins it sits
+// in thinking_test.go.
+var codexDebugModelsArgs = []string{"debug", "models", "--bundled"}
+
 func runCodexDebugModels(ctx context.Context, executablePath string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, executablePath, "debug", "models", "--output", "json")
+	cmd := exec.CommandContext(ctx, executablePath, codexDebugModelsArgs...)
 	hideAgentWindow(cmd)
 	return cmd.Output()
 }
@@ -350,6 +367,14 @@ func parseCodexDebugModels(raw []byte) map[string]*ModelThinking {
 // catalog for the given (provider, model) pair. Empty value is always
 // valid — it means "use the runtime default".
 //
+// Empty model is treated as "use the provider's default model"; we
+// resolve it through ListModels so the daemon's pre-execution guard
+// behaves the same whether the agent picked an explicit model or
+// inherited the runtime default. Without this, a default-model task
+// with a valid thinking_level would be rejected on the grounds that
+// the empty string is not in the catalog — exactly the misjudgement
+// Elon flagged in the PR1 review.
+//
 // The lookup goes through ListModels so it sees the *current* CLI
 // catalog (including dynamic discovery for codex), not just a static
 // map. The function is intentionally pure of HTTP concerns so the
@@ -363,8 +388,24 @@ func ValidateThinkingLevel(ctx context.Context, providerType, executablePath, mo
 	if err != nil {
 		return false, err
 	}
+	target := model
+	if target == "" {
+		// Default model = the entry the catalog marks as Default. If no
+		// entry is flagged, fall through to the no-match return; that
+		// matches the existing semantics where an unknown model fails
+		// closed rather than guessing.
+		for _, m := range models {
+			if m.Default {
+				target = m.ID
+				break
+			}
+		}
+		if target == "" {
+			return false, nil
+		}
+	}
 	for _, m := range models {
-		if m.ID != model {
+		if m.ID != target {
 			continue
 		}
 		if m.Thinking == nil {

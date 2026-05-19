@@ -1,8 +1,12 @@
 package agent
 
 import (
+	"context"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 )
 
@@ -76,6 +80,88 @@ func TestProjectClaudeLevels_PerModelSubset(t *testing.T) {
 	if !reflect.DeepEqual(values, superset) {
 		t.Fatalf("projectClaudeLevels for Opus: got %v, want %v", values, superset)
 	}
+}
+
+// ── Codex discovery argv ────────────────────────────────────────────
+//
+// Elon's PR1 review found that `codex debug models --output json` is
+// rejected by codex-cli 0.131.0 — there is no `--output` flag on the
+// subcommand. The fix was to drop the flag and add `--bundled` (which
+// just skips network refresh). These two tests pin the contract:
+//
+//   - TestCodexDebugModelsArgs_Pinned asserts the literal argv we pass
+//     so a future "let's add a flag" refactor breaks loudly instead of
+//     silently swallowing the discovery output.
+//   - TestRunCodexDebugModels_ArgvSeenByBinary plugs a fake `codex`
+//     binary on PATH and verifies that what *actually* reaches the
+//     process matches the pinned argv, not just what the var holds.
+
+func TestCodexDebugModelsArgs_Pinned(t *testing.T) {
+	t.Parallel()
+	want := []string{"debug", "models", "--bundled"}
+	if !reflect.DeepEqual(codexDebugModelsArgs, want) {
+		t.Fatalf("codexDebugModelsArgs drifted: got %v, want %v", codexDebugModelsArgs, want)
+	}
+	for _, arg := range codexDebugModelsArgs {
+		if arg == "--output" || arg == "-o" {
+			t.Errorf("--output / -o leaked back into argv (codex CLI does not accept it): %v", codexDebugModelsArgs)
+		}
+	}
+}
+
+// TestRunCodexDebugModels_ArgvSeenByBinary executes runCodexDebugModels
+// against a shell-script stand-in for `codex` that records its argv to
+// a file and prints a minimal valid JSON payload. The check is on what
+// the binary actually received (one argument per element, no merging
+// or splitting), not just the package var — the original bug surfaced
+// because a real codex saw `--output json` as two extra unknown args.
+func TestRunCodexDebugModels_ArgvSeenByBinary(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake binary requires a POSIX shell")
+	}
+	t.Parallel()
+
+	dir := t.TempDir()
+	argvFile := filepath.Join(dir, "argv.txt")
+	fake := filepath.Join(dir, "codex")
+	script := "#!/bin/sh\n" +
+		"printf '%s\\n' \"$@\" > '" + argvFile + "'\n" +
+		"echo '{\"models\":[]}'\n"
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+
+	raw, err := runCodexDebugModels(context.Background(), fake)
+	if err != nil {
+		t.Fatalf("runCodexDebugModels: %v (output=%q)", err, raw)
+	}
+
+	data, err := os.ReadFile(argvFile)
+	if err != nil {
+		t.Fatalf("read argv file: %v", err)
+	}
+	got := splitNonEmptyLines(string(data))
+	want := []string{"debug", "models", "--bundled"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("fake codex received argv %v, want %v", got, want)
+	}
+}
+
+func splitNonEmptyLines(s string) []string {
+	var out []string
+	start := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\n' {
+			if i > start {
+				out = append(out, s[start:i])
+			}
+			start = i + 1
+		}
+	}
+	if start < len(s) {
+		out = append(out, s[start:])
+	}
+	return out
 }
 
 // ── Codex debug models JSON parsing ──────────────────────────────────
@@ -178,6 +264,130 @@ func TestIsKnownThinkingValue(t *testing.T) {
 				tc.provider, tc.value, got, tc.want)
 		}
 	}
+}
+
+// ── ValidateThinkingLevel default-model handling ─────────────────────
+//
+// Elon's PR1 review called out that an empty model on a default-model
+// task must not be misjudged as "unknown model → reject". The fix is to
+// resolve empty model to the catalog's default entry inside the
+// validator. Both the daemon's per-model guard and the server's API
+// layer call this; if it gets default-model wrong, any agent without an
+// explicit model set would have its thinking_level dropped silently.
+
+func TestValidateThinkingLevel_EmptyModelResolvesToDefault(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake binary requires a POSIX shell")
+	}
+	t.Parallel()
+
+	// We need a `claude` whose --help advertises the full superset
+	// (low/medium/high/xhigh/max) so per-model projection actually has
+	// something to filter. A non-existent path falls back to a conservative
+	// [low,medium,high] which would hide the per-model behaviour we're
+	// trying to verify.
+	fakeClaude := writeFakeClaudeHelpBinary(t)
+	resetThinkingCacheForTests()
+	defer resetThinkingCacheForTests()
+
+	ctx := context.Background()
+
+	t.Run("valid level on default model passes", func(t *testing.T) {
+		// Claude's catalog flags Sonnet 4.6 as Default. Sonnet supports
+		// low/medium/high/max (no xhigh) per claudeModelEffortAllow, so
+		// "high" must round-trip when model is left empty.
+		ok, err := ValidateThinkingLevel(ctx, "claude", fakeClaude, "", "high")
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if !ok {
+			t.Errorf("default-model high should be valid for claude; got false")
+		}
+	})
+
+	t.Run("invalid level on default model fails", func(t *testing.T) {
+		// "xhigh" is opus-only; resolving "" to default (sonnet 4.6)
+		// should reject it, not silently accept.
+		ok, err := ValidateThinkingLevel(ctx, "claude", fakeClaude, "", "xhigh")
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if ok {
+			t.Errorf("xhigh should be invalid on sonnet (the default model); got true")
+		}
+	})
+
+	t.Run("empty value always valid", func(t *testing.T) {
+		// Empty value means "use runtime default" — should pass
+		// regardless of model resolution.
+		ok, err := ValidateThinkingLevel(ctx, "claude", fakeClaude, "", "")
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if !ok {
+			t.Errorf("empty value must always be valid")
+		}
+	})
+}
+
+func TestValidateThinkingLevel_ExplicitModel(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake binary requires a POSIX shell")
+	}
+	t.Parallel()
+	fakeClaude := writeFakeClaudeHelpBinary(t)
+	resetThinkingCacheForTests()
+	defer resetThinkingCacheForTests()
+
+	ctx := context.Background()
+
+	// xhigh IS valid on Opus 4.7.
+	ok, err := ValidateThinkingLevel(ctx, "claude", fakeClaude, "claude-opus-4-7", "xhigh")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if !ok {
+		t.Errorf("xhigh should be valid on opus-4-7; got false")
+	}
+
+	// xhigh is NOT valid on Sonnet — should fail.
+	ok, err = ValidateThinkingLevel(ctx, "claude", fakeClaude, "claude-sonnet-4-6", "xhigh")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if ok {
+		t.Errorf("xhigh must not be valid on sonnet-4-6; got true")
+	}
+
+	// An unknown model with a valid token still fails closed (no guess).
+	ok, err = ValidateThinkingLevel(ctx, "claude", fakeClaude, "claude-nonexistent", "high")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if ok {
+		t.Errorf("unknown model must fail closed; got true")
+	}
+}
+
+// writeFakeClaudeHelpBinary writes a small shell script that mimics
+// `claude --help`, emitting the full effort superset line so per-model
+// projection has something to filter. Returns the path to the executable.
+func writeFakeClaudeHelpBinary(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "claude")
+	script := "#!/bin/sh\n" +
+		"cat <<'EOF'\n" +
+		"Usage: claude [options]\n" +
+		"\n" +
+		"Options:\n" +
+		"  --model <model>     Model to use\n" +
+		"  --effort <level>    Effort level for the current session (low, medium, high, xhigh, max)\n" +
+		"EOF\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+	return path
 }
 
 // ── Cache key invalidation ───────────────────────────────────────────
