@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"os/exec"
@@ -254,8 +253,8 @@ var codexEffortLabel = map[string]string{
 }
 
 // codexDebugModelsResponse mirrors the JSON shape emitted by
-// `codex debug models --output json` (Codex 0.131.0+). Only the
-// fields we consume are typed; unknown keys are ignored.
+// `codex debug models` (Codex 0.131.0+). Only the fields we
+// consume are typed; unknown keys are ignored.
 type codexDebugModelsResponse struct {
 	Models []struct {
 		Slug                    string `json:"slug"`
@@ -317,16 +316,11 @@ func runCodexDebugModels(ctx context.Context, executablePath string) ([]byte, er
 }
 
 // parseCodexDebugModels takes the JSON payload from `codex debug
-// models --output json` and projects it into a per-model thinking
-// catalog. Returns an empty map (never nil) so callers can compose
-// safely without nil-checking the result.
+// models` and projects it into a per-model thinking catalog.
+// Returns an empty map (never nil) so callers can compose safely
+// without nil-checking the result.
 func parseCodexDebugModels(raw []byte) map[string]*ModelThinking {
 	out := map[string]*ModelThinking{}
-	scanner := bufio.NewScanner(strings.NewReader(string(raw)))
-	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	// `codex debug models` emits a single JSON document; the scanner
-	// loop is just defensive for future CLI versions that might add a
-	// JSONL mode.
 	var resp codexDebugModelsResponse
 	if err := json.Unmarshal(raw, &resp); err != nil {
 		return out
