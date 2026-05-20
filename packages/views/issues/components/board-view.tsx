@@ -247,6 +247,7 @@ export function BoardView({
   const sortBy = useViewStore((s) => s.sortBy);
   const sortDirection = useViewStore((s) => s.sortDirection);
   const grouping = useViewStore((s) => s.grouping);
+  const workingOnly = useViewStore((s) => s.workingOnly);
   const { getActorName } = useActorName();
   const myIssuesOpts = myIssuesScope
     ? { scope: myIssuesScope, filter: myIssuesFilter ?? {} }
@@ -489,6 +490,7 @@ export function BoardView({
                 activeTasksMap={activeTasksMap}
                 myIssuesOpts={myIssuesOpts}
                 projectId={projectId}
+                workingOnly={workingOnly}
               />
             ) : (
               assigneeGroupQueryKey && assigneeGroupFilter ? (
@@ -502,6 +504,7 @@ export function BoardView({
                   queryKey={assigneeGroupQueryKey}
                   filter={assigneeGroupFilter}
                   projectId={projectId}
+                  workingOnly={workingOnly}
                 />
               ) : (
                 <BoardColumn
@@ -551,6 +554,7 @@ function PaginatedAssigneeBoardColumn({
   queryKey,
   filter,
   projectId,
+  workingOnly,
 }: {
   group: BoardColumnGroup;
   issueIds: string[];
@@ -560,6 +564,7 @@ function PaginatedAssigneeBoardColumn({
   queryKey: QueryKey;
   filter: AssigneeGroupedIssuesFilter;
   projectId?: string;
+  workingOnly: boolean;
 }) {
   const { loadMore, hasMore, isLoading, total } = useLoadMoreByAssigneeGroup(
     {
@@ -570,6 +575,13 @@ function PaginatedAssigneeBoardColumn({
     queryKey,
     filter,
   );
+  // The hook's `total` is read from the raw query cache so load-more knows
+  // when the server has more rows. The displayed column count must follow
+  // the visible-after-filter set instead — when the Working filter is on,
+  // `group.totalCount` (set by `applyWorkingFilterToGroups`) is the filtered
+  // count, otherwise it equals the cache total so the user sees the usual
+  // "N total" affordance during paginated loads.
+  const displayCount = workingOnly ? group.totalCount ?? issueIds.length : total;
   return (
     <BoardColumn
       group={group}
@@ -577,7 +589,7 @@ function PaginatedAssigneeBoardColumn({
       issueMap={issueMap}
       childProgressMap={childProgressMap}
       activeTasksMap={activeTasksMap}
-      totalCount={total}
+      totalCount={displayCount}
       projectId={projectId}
       footer={
         hasMore ? (
@@ -596,6 +608,7 @@ function PaginatedBoardColumn({
   activeTasksMap,
   myIssuesOpts,
   projectId,
+  workingOnly,
 }: {
   group: BoardColumnGroup & { status: IssueStatus };
   issueIds: string[];
@@ -604,11 +617,16 @@ function PaginatedBoardColumn({
   activeTasksMap?: Map<string, AgentTask[]>;
   myIssuesOpts?: { scope: string; filter: MyIssuesFilter };
   projectId?: string;
+  workingOnly: boolean;
 }) {
   const { loadMore, hasMore, isLoading, total } = useLoadMoreByStatus(
     group.status,
     myIssuesOpts,
   );
+  // Same split as the assignee-grouped path: the hook keeps using the raw
+  // cache total for pagination, but the column header reflects what the
+  // user actually sees once the Working filter has trimmed the column.
+  const displayCount = workingOnly ? issueIds.length : total;
   return (
     <BoardColumn
       group={group}
@@ -616,7 +634,7 @@ function PaginatedBoardColumn({
       issueMap={issueMap}
       childProgressMap={childProgressMap}
       activeTasksMap={activeTasksMap}
-      totalCount={total}
+      totalCount={displayCount}
       projectId={projectId}
       footer={
         hasMore ? (
