@@ -352,6 +352,10 @@ export function ManualCreatePanel({
   // Forward squad picks alongside agent picks so the agent panel honors
   // the actor the user already chose — otherwise a squad selection silently
   // falls back to the persisted actor / first visible agent on flip.
+  // parent_issue_id rides through the same carry channel: the modal opener
+  // (openCreateSubIssue) seeded it on the manual panel, and the agent panel
+  // needs it so the new issue is still created as a sub-issue when the user
+  // flips from "Add sub issue" → "Create with agent".
   const switchToAgent = () => {
     const desc = descEditorRef.current?.getMarkdown()?.trim() ?? "";
     const prompt = [title.trim(), desc].filter(Boolean).join("\n\n");
@@ -369,6 +373,8 @@ export function ManualCreatePanel({
           ? { squad_id: assigneeId }
           : {}),
       ...(projectId ? { project_id: projectId } : {}),
+      ...(parentIssueId ? { parent_issue_id: parentIssueId } : {}),
+      ...(parentIssue?.identifier ? { parent_issue_identifier: parentIssue.identifier } : {}),
     });
   };
 
