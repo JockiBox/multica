@@ -86,12 +86,12 @@ func prepareCodexHomeWithOpts(codexHome string, opts CodexHomeOptions, logger *s
 	// into a stale local copy.
 	logCodexAuthState(filepath.Join(codexHome, "auth.json"), logger)
 
-	// Copy config files (isolated per task).
+	// Sync config files from the shared source (isolated per task).
 	for _, name := range codexCopiedFiles {
 		src := filepath.Join(sharedHome, name)
 		dst := filepath.Join(codexHome, name)
-		if err := copyFileIfExists(src, dst); err != nil {
-			logger.Warn("execenv: codex-home copy failed", "file", name, "error", err)
+		if err := syncCopiedFile(src, dst); err != nil {
+			logger.Warn("execenv: codex-home sync failed", "file", name, "error", err)
 		}
 	}
 
@@ -271,22 +271,36 @@ func logCodexAuthState(authPath string, logger *slog.Logger) {
 // codex_sandbox.go's ensureCodexSandboxConfig so they can be updated
 // idempotently without touching user-managed keys.)
 
-// copyFileIfExists copies src to dst. If src doesn't exist, it's a no-op.
-// If dst already exists, it is refreshed from src so the per-task copy
-// tracks the current shared source across Reuse() runs.
+// syncCopiedFile mirrors a per-task dst onto the current state of the shared
+// src so the per-task copy tracks the shared source across Reuse() runs:
 //
-// Regression for MUL-2646: the prior "don't overwrite" guard left
-// per-task config.toml / config.json / instructions.md stuck on whatever
-// snapshot they were seeded with at first Prepare. A user who edited
-// ~/.codex/config.toml between runs — e.g. switching the active
-// [model_providers.X] base_url, or pointing env_key at a freshly rotated
-// API key — kept hitting the stale per-task copy on session resume, with
-// Codex calling the new URL using the old key. The daemon-managed
-// sandbox / multi-agent / memory blocks are applied via marker-bracketed
-// idempotent passes after this copy, so refreshing here preserves them.
-func copyFileIfExists(src, dst string) error {
-	if _, err := os.Stat(src); os.IsNotExist(err) {
-		return nil
+//   - src present, dst absent:  copy src → dst
+//   - src present, dst present: drop dst and re-copy src → dst (refresh)
+//   - src absent,  dst present: drop dst (the shared source has been removed,
+//     so the per-task stale copy must not linger)
+//   - src absent,  dst absent:  no-op
+//
+// Regression for MUL-2646: the prior "don't overwrite" guard left per-task
+// config.toml / config.json / instructions.md stuck on whatever snapshot they
+// were seeded with at first Prepare. A user who edited ~/.codex/config.toml
+// between runs — switching the active [model_providers.X] base_url, pointing
+// env_key at a freshly rotated API key, or removing the file outright to
+// drop a provider — kept hitting the stale per-task copy on session resume,
+// with Codex calling the new URL using the old key (or replaying a provider
+// the user had since deleted from the shared config).
+//
+// For config.toml the subsequent ensureCodex{Sandbox,MultiAgent,Memory}Config
+// passes recreate the file from scratch when the shared source is gone, so
+// the per-task home keeps the daemon-managed defaults but loses every
+// user-managed [model_providers.X] / model_provider line that no longer
+// exists in the shared config. For config.json / instructions.md there is
+// no daemon-managed default, so they simply disappear in lockstep with the
+// shared source.
+func syncCopiedFile(src, dst string) error {
+	_, srcErr := os.Stat(src)
+	srcMissing := os.IsNotExist(srcErr)
+	if srcErr != nil && !srcMissing {
+		return fmt.Errorf("stat src %s: %w", src, srcErr)
 	}
 
 	if _, err := os.Lstat(dst); err == nil {
@@ -295,6 +309,9 @@ func copyFileIfExists(src, dst string) error {
 		}
 	}
 
+	if srcMissing {
+		return nil
+	}
 	return copyFile(src, dst)
 }
 
