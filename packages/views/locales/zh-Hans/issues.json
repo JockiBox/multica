@@ -446,5 +446,23 @@
     "dont_show_again": "不再提示",
     "keep_in_backlog": "保持在 Backlog",
     "move_to_todo": "移到 Todo"
+  },
+  "saved_views": {
+    "create_tooltip": "新建视图",
+    "create_placeholder": "视图名称",
+    "create_action": "创建",
+    "rename_action": "重命名",
+    "delete_action": "删除",
+    "save_action": "保存",
+    "save_as_action": "另存为新视图",
+    "delete_confirm_title": "删除视图？",
+    "delete_confirm_desc": "此视图将被永久删除，且无法恢复。",
+    "delete_confirm_action": "删除",
+    "cancel_action": "取消",
+    "create_failed": "创建视图失败",
+    "update_failed": "更新视图失败",
+    "delete_failed": "删除视图失败",
+    "unsaved_changes": "有未保存的更改",
+    "name_required": "请输入视图名称"
   }
 }

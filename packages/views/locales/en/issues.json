@@ -457,5 +457,23 @@
     "dont_show_again": "Don't show this again",
     "keep_in_backlog": "Keep in Backlog",
     "move_to_todo": "Move to Todo"
+  },
+  "saved_views": {
+    "create_tooltip": "Create view",
+    "create_placeholder": "View name",
+    "create_action": "Create",
+    "rename_action": "Rename",
+    "delete_action": "Delete",
+    "save_action": "Save",
+    "save_as_action": "Save as new view",
+    "delete_confirm_title": "Delete view?",
+    "delete_confirm_desc": "This view will be permanently deleted. This cannot be undone.",
+    "delete_confirm_action": "Delete",
+    "cancel_action": "Cancel",
+    "create_failed": "Failed to create view",
+    "update_failed": "Failed to update view",
+    "delete_failed": "Failed to delete view",
+    "unsaved_changes": "Unsaved changes",
+    "name_required": "View name is required"
   }
 }

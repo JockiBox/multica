@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -70,11 +70,18 @@ import {
   type IssuesScope,
 } from "@multica/core/issues/stores/issues-scope-store";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@multica/ui/components/ui/tooltip";
-import type { Issue } from "@multica/core/types";
+import type { Issue, IssueStatus, IssuePriority, SavedView } from "@multica/core/types";
 import { useT } from "../../i18n";
 import { matchesPinyin } from "../../editor/extensions/pinyin-match";
 import { useIssueViewStore } from "@multica/core/issues/stores/view-store";
+import {
+  useActiveViewStore,
+  deserializeViewFilters,
+  serializeViewFilters,
+  isViewDirty,
+} from "@multica/core/views";
 import { WorkspaceAgentWorkingChip } from "./workspace-agent-working-chip";
+import { ViewTabs } from "./view-tabs";
 
 // ---------------------------------------------------------------------------
 // HoverCheck — shadcn official pattern (PR #6862)
@@ -159,12 +166,6 @@ function useIssueCounts(allIssues: Issue[]) {
     return { status, priority, assignee, creator, noAssignee, project, noProject, label };
   }, [allIssues]);
 }
-
-// ---------------------------------------------------------------------------
-// Scope config
-// ---------------------------------------------------------------------------
-
-const SCOPE_VALUES: IssuesScope[] = ["all", "members", "agents"];
 
 // ---------------------------------------------------------------------------
 // Actor sub-menu content (shared between Assignee and Creator)
@@ -508,58 +509,88 @@ export function IssuesHeader({
   const { t } = useT("issues");
   const scope = useIssuesScopeStore((s) => s.scope);
   const setScope = useIssuesScopeStore((s) => s.setScope);
-  // Bind the workspace agents-working chip to the global /issues view
-  // store. Subscribing here keeps the chip presentational and lets
-  // /my-issues bind its own store via a sibling header.
   const agentRunningFilter = useIssueViewStore((s) => s.agentRunningFilter);
   const toggleAgentRunningFilter = useIssueViewStore(
     (s) => s.toggleAgentRunningFilter,
   );
-  // Scope the chip to whatever issues this page is currently showing.
-  // /issues uses the full workspace minus Members/Agents pill filtering;
-  // passing the visible-issue id set lets the chip count match the list
-  // length when the filter is on.
   const scopedIssueIds = useMemo(
     () => new Set(scopedIssues.map((i) => i.id)),
     [scopedIssues],
   );
-  const SCOPE_LABEL_KEY: Record<IssuesScope, "all_label" | "members_label" | "agents_label"> = {
-    all: "all_label",
-    members: "members_label",
-    agents: "agents_label",
-  };
-  const SCOPE_DESC_KEY: Record<IssuesScope, "all_description" | "members_description" | "agents_description"> = {
-    all: "all_description",
-    members: "members_description",
-    agents: "agents_description",
-  };
+
+  // --- View tabs integration ---
+  const activeViewId = useActiveViewStore((s) => s.issuesActiveViewId);
+  const setActiveView = useActiveViewStore((s) => s.setIssuesActiveView);
+
+  const statusFilters = useIssueViewStore((s) => s.statusFilters);
+  const priorityFilters = useIssueViewStore((s) => s.priorityFilters);
+  const assigneeFilters = useIssueViewStore((s) => s.assigneeFilters);
+  const includeNoAssignee = useIssueViewStore((s) => s.includeNoAssignee);
+  const creatorFilters = useIssueViewStore((s) => s.creatorFilters);
+  const projectFilters = useIssueViewStore((s) => s.projectFilters);
+  const includeNoProject = useIssueViewStore((s) => s.includeNoProject);
+  const labelFilters = useIssueViewStore((s) => s.labelFilters);
+
+  const [savedView, setSavedView] = useState<SavedView | null>(null);
+
+  const isDirty = useMemo(() => {
+    if (!savedView) return false;
+    return isViewDirty(savedView, scope, {
+      statusFilters, priorityFilters, assigneeFilters, includeNoAssignee,
+      creatorFilters, projectFilters, includeNoProject, labelFilters,
+    });
+  }, [savedView, scope, statusFilters, priorityFilters, assigneeFilters, includeNoAssignee, creatorFilters, projectFilters, includeNoProject, labelFilters]);
+
+  const handleViewSelect = useCallback(
+    (view: SavedView) => {
+      setActiveView(view.id);
+      setSavedView(view);
+      const deserialized = deserializeViewFilters(view);
+      setScope(deserialized.scope as IssuesScope);
+      const store = useIssueViewStore.getState();
+      store.clearFilters();
+      const f = deserialized.filters;
+      for (const s of f.statusFilters) store.toggleStatusFilter(s as IssueStatus);
+      for (const p of f.priorityFilters) store.togglePriorityFilter(p as IssuePriority);
+      for (const a of f.assigneeFilters) store.toggleAssigneeFilter(a);
+      if (f.includeNoAssignee) store.toggleNoAssignee();
+      for (const c of f.creatorFilters) store.toggleCreatorFilter(c);
+      for (const p of f.projectFilters) store.toggleProjectFilter(p);
+      if (f.includeNoProject) store.toggleNoProject();
+      for (const l of f.labelFilters) store.toggleLabelFilter(l);
+    },
+    [setActiveView, setScope],
+  );
+
+  const getCurrentFilters = useCallback(
+    () =>
+      serializeViewFilters(scope, {
+        statusFilters, priorityFilters, assigneeFilters, includeNoAssignee,
+        creatorFilters, projectFilters, includeNoProject, labelFilters,
+      }),
+    [scope, statusFilters, priorityFilters, assigneeFilters, includeNoAssignee, creatorFilters, projectFilters, includeNoProject, labelFilters],
+  );
+
+  const labelOverrides = useMemo(
+    () => ({
+      All: t(($) => $.scope.all_label),
+      Members: t(($) => $.scope.members_label),
+      Agents: t(($) => $.scope.agents_label),
+    }),
+    [t],
+  );
 
   return (
     <div className="flex h-12 shrink-0 items-center justify-between px-4">
-      {/* Left: scope buttons */}
-      <div className="flex items-center gap-1">
-        {SCOPE_VALUES.map((s) => (
-          <Tooltip key={s}>
-            <TooltipTrigger
-              render={
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className={
-                    scope === s
-                      ? "bg-accent text-accent-foreground hover:bg-accent/80"
-                      : "text-muted-foreground"
-                  }
-                  onClick={() => setScope(s)}
-                >
-                  {t(($) => $.scope[SCOPE_LABEL_KEY[s]])}
-                </Button>
-              }
-            />
-            <TooltipContent side="bottom">{t(($) => $.scope[SCOPE_DESC_KEY[s]])}</TooltipContent>
-          </Tooltip>
-        ))}
-      </div>
+      <ViewTabs
+        page="issues"
+        activeViewId={activeViewId}
+        onViewSelect={handleViewSelect}
+        isDirty={isDirty}
+        onSave={() => setSavedView(null)}
+        getCurrentFilters={getCurrentFilters}
+        labelOverrides={labelOverrides}
+      />
 
       <div className="flex items-center gap-1">
         {agentRunningFilter && (

@@ -113,6 +113,16 @@ const mockListSquads = vi.hoisted(() =>
     },
   ]),
 );
+const mockListViews = vi.hoisted(() =>
+  vi.fn().mockResolvedValue({
+    views: [
+      { id: "v-all", workspace_id: "ws-1", creator_id: null, name: "All", page: "issues", project_id: null, filters: {}, position: 1, shared: true, is_default: true, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
+      { id: "v-members", workspace_id: "ws-1", creator_id: null, name: "Members", page: "issues", project_id: null, filters: { assigneeType: ["member"] }, position: 2, shared: true, is_default: false, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
+      { id: "v-agents", workspace_id: "ws-1", creator_id: null, name: "Agents", page: "issues", project_id: null, filters: { assigneeType: ["agent", "squad"] }, position: 3, shared: true, is_default: false, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
+    ],
+    total: 3,
+  }),
+);
 vi.mock("@multica/core/api", () => ({
   api: {
     listIssues: (...args: any[]) => mockListIssues(...args),
@@ -121,6 +131,11 @@ vi.mock("@multica/core/api", () => ({
     listMembers: (...args: any[]) => mockListMembers(...args),
     listAgents: (...args: any[]) => mockListAgents(...args),
     listSquads: (...args: any[]) => mockListSquads(...args),
+    listViews: (...args: any[]) => mockListViews(...args),
+    createView: vi.fn().mockResolvedValue({}),
+    updateView: vi.fn().mockResolvedValue({}),
+    deleteView: vi.fn().mockResolvedValue(undefined),
+    reorderViews: vi.fn().mockResolvedValue(undefined),
   },
   getApi: () => ({
     listIssues: (...args: any[]) => mockListIssues(...args),
@@ -129,6 +144,11 @@ vi.mock("@multica/core/api", () => ({
     listMembers: (...args: any[]) => mockListMembers(...args),
     listAgents: (...args: any[]) => mockListAgents(...args),
     listSquads: (...args: any[]) => mockListSquads(...args),
+    listViews: (...args: any[]) => mockListViews(...args),
+    createView: vi.fn().mockResolvedValue({}),
+    updateView: vi.fn().mockResolvedValue({}),
+    deleteView: vi.fn().mockResolvedValue(undefined),
+    reorderViews: vi.fn().mockResolvedValue(undefined),
   }),
   setApiInstance: vi.fn(),
 }));
@@ -245,6 +265,35 @@ vi.mock("@multica/core/issues/stores/issues-scope-store", () => ({
     { getState: () => ({ scope: mockScope, setScope: vi.fn() }) },
   ),
 }));
+
+let mockActiveViewId: string | null = "v-all";
+vi.mock("@multica/core/views", async () => {
+  const actual = await vi.importActual<typeof import("@multica/core/views")>("@multica/core/views");
+  return {
+    ...actual,
+    useActiveViewStore: Object.assign(
+      (selector?: any) => {
+        const state = {
+          issuesActiveViewId: mockActiveViewId,
+          myIssuesActiveViewId: null,
+          projectActiveViewIds: {},
+          setIssuesActiveView: (id: string | null) => { mockActiveViewId = id; },
+          setMyIssuesActiveView: vi.fn(),
+          setProjectActiveView: vi.fn(),
+        };
+        return selector ? selector(state) : state;
+      },
+      {
+        getState: () => ({
+          issuesActiveViewId: mockActiveViewId,
+          setIssuesActiveView: (id: string | null) => { mockActiveViewId = id; },
+          setMyIssuesActiveView: vi.fn(),
+          setProjectActiveView: vi.fn(),
+        }),
+      },
+    ),
+  };
+});
 
 vi.mock("@multica/core/issues/stores/selection-store", () => ({
   useIssueSelectionStore: Object.assign(
