@@ -98,6 +98,64 @@ curl -X POST "$MULTICA_WEBHOOK_URL" \
 配置 GitHub 之类的来源时，请把 content type 设为 `application/json`——
 表单编码的 webhook payload 在 v1 里不接受。
 
+### 事件过滤
+
+新建的 webhook 触发器对每一条入站 POST 都会触发，这在单一用途的 URL
+上没问题，但对那种会扇出很多事件类型的来源（典型就是 GitHub——
+一个仓库 webhook 就会同时下发 `push`、`pull_request`、`workflow_run`、
+`check_suite` 等等）就会很吵。webhook 触发器上的**事件过滤**区块用来
+限制哪些事件真正派发一次 run；其它的只记录到投递历史里，
+`status = ignored`、`reason = event_filtered`，不会建任何 issue 或 run。
+
+每一行是一条规则：一个**事件名**加可选的、逗号分隔的 **action** 列表。
+**任意一行命中**即放行；区块留空则接受所有事件（即过滤前的行为）。
+
+例子：
+
+| 事件名           | Actions             | 命中范围                                                                 |
+| ---------------- | ------------------- | ------------------------------------------------------------------------ |
+| `workflow_run`   | `completed, failed` | 只有 `action` 为 `completed` 或 `failed` 的 `workflow_run` 事件          |
+| `workflow_run`   | _(留空)_            | 所有 `workflow_run` 事件，不限 action                                    |
+| `push`           | _(留空)_            | 所有 `push` 事件                                                         |
+
+#### 事件名和 action 从哪来
+
+Multica 按下面的顺序从入站请求里推断 `event` 和 `action`，**先命中先用**：
+
+1. **Body envelope** —— 如果 body 是一个 JSON 对象、并且带
+   `event: "<字符串>"` 字段，就用它。可选的 `eventPayload` 对象再
+   提供 `action` / `state` / `conclusion` / `status` 候选。
+2. **请求头** —— `X-GitHub-Event: <event>` 配合 body `action`；
+   `X-Gitlab-Event: <event>`；`X-Event-Type: <event>`（原样使用）。
+3. **Body 兜底** —— 顶层字符串 `event` / `type` / `action`。
+4. **默认值** —— 以上都没命中时取 `webhook.received`。
+
+action 候选来自事件名后缀（`provider.event.<action>`）以及 body 里
+`action`、`state`、`conclusion`、`status` 这四个字符串字段。
+**非字符串值不算候选**——`{"action": true}` 不会被识别为 action。
+保存前请先 trim 掉首尾空格；`" workflow_run "` 这种带空白的值
+会被原样保存，但永远命中不了。
+
+#### 快速验证
+
+配好过滤后，可以用 `curl` 同时验证「命中」和「被过滤」两条路径：
+
+```bash
+# 命中 —— 请求头给出 event=workflow_run，body 给出 action=completed
+curl -X POST "$MULTICA_WEBHOOK_URL" \
+  -H 'X-GitHub-Event: workflow_run' \
+  -H 'Content-Type: application/json' \
+  -d '{"action":"completed"}'
+# → 200 {"status":"accepted", ...}
+
+# 被过滤 —— 同样的事件，但 action 不在白名单
+curl -X POST "$MULTICA_WEBHOOK_URL" \
+  -H 'X-GitHub-Event: workflow_run' \
+  -H 'Content-Type: application/json' \
+  -d '{"action":"in_progress"}'
+# → 200 {"status":"ignored","reason":"event_filtered"}
+```
+
 ### URL 即 bearer secret
 
 生成的 URL **就是凭证**，谁拿到都能触发这个 Autopilot。请按 token 对待：
