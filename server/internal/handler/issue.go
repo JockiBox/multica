@@ -971,6 +971,11 @@ LIMIT %s OFFSET %s`, whereSql, orderBy, limitRef, offsetRef)
 type issueActorFilter struct {
 	actorType string
 	actorID   pgtype.UUID
+	// setKind, when non-empty, marks a dynamic actor set resolved server-side
+	// from the requesting user rather than a concrete actorID match: "my_agents"
+	// (agents the user owns) or "my_squads" (squads the user belongs to). For
+	// these, actorID holds the requesting user's UUID, consumed by a subquery.
+	setKind string
 }
 
 func splitCommaParam(raw string) []string {
@@ -1013,6 +1018,16 @@ func parseUUIDParamList(w http.ResponseWriter, raw, fieldName string) ([]pgtype.
 // viewer is a person, never an agent or squad).
 const meToken = "{me}"
 
+// myAgentsToken / mySquadsToken are the dynamic-set counterparts of {me}: a
+// saved view stores them instead of a frozen list of agent/squad UUIDs so the
+// "my agents" scope follows the user's current agents/squads. Each only pairs
+// with its own actor type and is meaningless for a creator (a creator is always
+// a member).
+const (
+	myAgentsToken = "{my_agents}"
+	mySquadsToken = "{my_squads}"
+)
+
 func parseActorFilterList(w http.ResponseWriter, raw, fieldName, currentUserID string) ([]issueActorFilter, bool) {
 	parts := splitCommaParam(raw)
 	if len(parts) == 0 {
@@ -1027,6 +1042,27 @@ func parseActorFilterList(w http.ResponseWriter, raw, fieldName, currentUserID s
 		}
 		actorType := pieces[0]
 		idRaw := strings.TrimSpace(pieces[1])
+
+		// Dynamic-set tokens resolve to the requesting user; each pairs with
+		// exactly one actor type. actorID carries the user UUID for the subquery.
+		if setKind, isSet := actorSetKind(idRaw); isSet {
+			if (idRaw == myAgentsToken && actorType != "agent") ||
+				(idRaw == mySquadsToken && actorType != "squad") {
+				writeError(w, http.StatusBadRequest, idRaw+" cannot pair with "+actorType+" in "+fieldName)
+				return nil, false
+			}
+			if currentUserID == "" {
+				writeError(w, http.StatusBadRequest, idRaw+" requires an authenticated user in "+fieldName)
+				return nil, false
+			}
+			id, ok := parseUUIDOrBadRequest(w, currentUserID, fieldName)
+			if !ok {
+				return nil, false
+			}
+			filters = append(filters, issueActorFilter{actorType: actorType, actorID: id, setKind: setKind})
+			continue
+		}
+
 		if idRaw == meToken {
 			if actorType != "member" {
 				writeError(w, http.StatusBadRequest, meToken+" is only valid for a member in "+fieldName)
@@ -1050,20 +1086,30 @@ func parseActorFilterList(w http.ResponseWriter, raw, fieldName, currentUserID s
 	return filters, true
 }
 
-// issueInvolvesUserFragment is the WHERE predicate that widens an assignee
-// filter to issues where the user is the indirect assignee: an agent they own,
-// or a squad they belong to / lead / have an owned agent inside. %[1]s is the
-// bind ref for the user UUID; $1 is the workspace UUID (both ListIssues and
-// ListGroupedIssues reserve $1 = workspace_id). Member-direct assignment is
-// excluded by design — that is the meaning of assignee_filters=member:<id>,
-// and the "my agents" scope must stay disjoint from it.
-const issueInvolvesUserFragment = `(
-    (i.assignee_type = 'agent' AND i.assignee_id IN (
+func actorSetKind(idRaw string) (string, bool) {
+	switch idRaw {
+	case myAgentsToken:
+		return "my_agents", true
+	case mySquadsToken:
+		return "my_squads", true
+	default:
+		return "", false
+	}
+}
+
+// myAgentsAssigneePredicate / mySquadsAssigneePredicate are the assignee WHERE
+// predicates for the {my_agents} / {my_squads} dynamic sets, and the building
+// blocks of the legacy involves_user_id fragment. %[1]s is the bind ref for the
+// user UUID; $1 is the workspace UUID (both ListIssues and ListGroupedIssues
+// reserve $1 = workspace_id). Member-direct assignment is deliberately excluded
+// — that is assignee_filters=member:<id>, which must stay disjoint from these.
+const (
+	myAgentsAssigneePredicate = `(i.assignee_type = 'agent' AND i.assignee_id IN (
        SELECT a.id FROM agent a
         WHERE a.workspace_id = $1
           AND a.owner_id     = %[1]s::uuid
-    ))
-    OR (i.assignee_type = 'squad' AND i.assignee_id IN (
+    ))`
+	mySquadsAssigneePredicate = `(i.assignee_type = 'squad' AND i.assignee_id IN (
        SELECT sm.squad_id
          FROM squad_member sm
          JOIN squad s ON s.id = sm.squad_id
@@ -1086,8 +1132,11 @@ const issueInvolvesUserFragment = `(
           AND sm.member_type = 'agent'
           AND a.workspace_id = $1
           AND a.owner_id     = %[1]s::uuid
-    ))
-)`
+    ))`
+	// issueInvolvesUserFragment widens an assignee filter to any issue where the
+	// user is the indirect assignee (owned agent OR involved squad).
+	issueInvolvesUserFragment = "(" + myAgentsAssigneePredicate + " OR " + mySquadsAssigneePredicate + ")"
+)
 
 // appendIssueFilters parses the orthogonal issue-filter query params shared by
 // ListIssues and ListGroupedIssues, appending SQL predicates to *where and
@@ -1186,11 +1235,18 @@ func (h *Handler) appendIssueFilters(w http.ResponseWriter, r *http.Request, whe
 	if len(assigneeFilters) > 0 || includeNoAssignee {
 		ors := make([]string, 0, len(assigneeFilters)+1)
 		for _, filter := range assigneeFilters {
-			ors = append(ors, fmt.Sprintf(
-				"(i.assignee_type = %s::text AND i.assignee_id = %s::uuid)",
-				addArg(filter.actorType),
-				addArg(filter.actorID),
-			))
+			switch filter.setKind {
+			case "my_agents":
+				ors = append(ors, fmt.Sprintf(myAgentsAssigneePredicate, addArg(filter.actorID)))
+			case "my_squads":
+				ors = append(ors, fmt.Sprintf(mySquadsAssigneePredicate, addArg(filter.actorID)))
+			default:
+				ors = append(ors, fmt.Sprintf(
+					"(i.assignee_type = %s::text AND i.assignee_id = %s::uuid)",
+					addArg(filter.actorType),
+					addArg(filter.actorID),
+				))
+			}
 		}
 		if includeNoAssignee {
 			ors = append(ors, "(i.assignee_type IS NULL AND i.assignee_id IS NULL)")
@@ -1205,6 +1261,11 @@ func (h *Handler) appendIssueFilters(w http.ResponseWriter, r *http.Request, whe
 	if len(creatorFilters) > 0 {
 		ors := make([]string, 0, len(creatorFilters))
 		for _, filter := range creatorFilters {
+			// Dynamic actor sets describe assignment, not authorship.
+			if filter.setKind != "" {
+				writeError(w, http.StatusBadRequest, "creator_filters does not support dynamic actor sets")
+				return false
+			}
 			ors = append(ors, fmt.Sprintf(
 				"(i.creator_type = %s::text AND i.creator_id = %s::uuid)",
 				addArg(filter.actorType),
