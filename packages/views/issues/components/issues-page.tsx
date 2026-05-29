@@ -237,6 +237,7 @@ export function IssuesPage() {
             page: "issues",
             currentViewId,
             onSelectView: setActiveView,
+            currentFilters: activeFilters,
             resolveDefaultName: (nameKey) =>
               t(($) => $.views.defaults[nameKey as keyof typeof $.views.defaults] ?? nameKey),
           }}

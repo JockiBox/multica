@@ -234,6 +234,7 @@ export function MyIssuesPage() {
           allIssues={myIssues}
           currentViewId={currentViewId}
           onSelectView={setActiveView}
+          currentFilters={activeFilters}
         />
         {myIssues.length === 0 ? (
           <div className="flex flex-1 min-h-0 flex-col items-center justify-center gap-2 text-muted-foreground">

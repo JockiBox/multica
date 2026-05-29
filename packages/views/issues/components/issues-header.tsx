@@ -66,7 +66,7 @@ import {
 import { useViewStore, useViewStoreApi } from "@multica/core/issues/stores/view-store-context";
 import type { SortField, IssueGrouping, SwimlaneGrouping, ViewMode } from "@multica/core/issues/stores/view-store";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@multica/ui/components/ui/tooltip";
-import type { Issue, SavedView } from "@multica/core/types";
+import type { Issue, SavedView, ViewFilters } from "@multica/core/types";
 import { ViewTabs } from "../../views/view-tabs";
 import { useT } from "../../i18n";
 import { matchesPinyin } from "../../editor/extensions/pinyin-match";
@@ -503,6 +503,7 @@ export function IssuesHeader({
     currentViewId: string | null;
     onSelectView: (view: SavedView | null) => void;
     resolveDefaultName: (nameKey: string) => string;
+    currentFilters?: ViewFilters;
   };
   allowGantt?: boolean;
 }) {
@@ -533,6 +534,7 @@ export function IssuesHeader({
           currentViewId={viewTabs.currentViewId}
           onSelectView={viewTabs.onSelectView}
           resolveDefaultName={viewTabs.resolveDefaultName}
+          currentFilters={viewTabs.currentFilters}
         />
       ) : (
         <div />

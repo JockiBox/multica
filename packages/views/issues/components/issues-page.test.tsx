@@ -76,6 +76,10 @@ vi.mock("@multica/core/views", () => ({
   }),
   viewKeys: { list: (wsId: string, page: string, p?: string) => ["views", wsId, page, p ?? null] },
   buildDefaultViewRequests: () => [],
+  useCreateView: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useUpdateView: () => ({ mutate: vi.fn(), isPending: false }),
+  useDeleteView: () => ({ mutate: vi.fn(), isPending: false }),
+  useReorderViews: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 vi.mock("../../views/use-seed-default-views", () => ({
   useSeedDefaultViews: () => {},
@@ -336,6 +340,7 @@ vi.mock("@dnd-kit/core", () => ({
 vi.mock("@dnd-kit/sortable", () => ({
   SortableContext: ({ children }: any) => children,
   verticalListSortingStrategy: {},
+  horizontalListSortingStrategy: {},
   arrayMove: vi.fn(),
   useSortable: () => ({
     attributes: {},

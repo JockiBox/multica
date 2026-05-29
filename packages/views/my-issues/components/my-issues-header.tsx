@@ -2,7 +2,7 @@
 
 import { useMemo } from "react";
 import { useStore } from "zustand";
-import type { Issue, SavedView } from "@multica/core/types";
+import type { Issue, SavedView, ViewFilters } from "@multica/core/types";
 import { myIssuesViewStore } from "@multica/core/issues/stores/my-issues-view-store";
 import { useT } from "../../i18n";
 import { WorkspaceAgentWorkingChip } from "../../issues/components/workspace-agent-working-chip";
@@ -13,10 +13,12 @@ export function MyIssuesHeader({
   allIssues,
   currentViewId,
   onSelectView,
+  currentFilters,
 }: {
   allIssues: Issue[];
   currentViewId: string | null;
   onSelectView: (view: SavedView | null) => void;
+  currentFilters?: ViewFilters;
 }) {
   const { t } = useT("my-issues");
   const { t: tIssues } = useT("issues");
@@ -33,6 +35,7 @@ export function MyIssuesHeader({
         page="my_issues"
         currentViewId={currentViewId}
         onSelectView={onSelectView}
+        currentFilters={currentFilters}
         resolveDefaultName={(nameKey) =>
           t(($) => $.views.defaults[nameKey as keyof typeof $.views.defaults] ?? nameKey)
         }
