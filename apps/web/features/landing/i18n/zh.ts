@@ -295,14 +295,14 @@ export function createZhDict(allowSignup: boolean): LandingDict {
       {
         version: "0.3.14",
         date: "2026-06-02",
-        title: "日语支持、技能快捷选择与工作区 Logo",
+        title: "日语支持和 /skill command",
         changes: [],
         features: [
-          "Multica 现在支持日语界面、官网和文档，包含日语设置、文档搜索和更适合日语的字体显示",
-          "聊天输入框现在可以通过斜杠菜单选择智能体技能，团队不必记住完整技能名称也能更明确地指挥智能体",
-          "工作区现在可以上传自定义 Logo，并显示在导航、设置、面包屑和入门流程中",
-          "团队现在可以通过命令行或 API 给智能体追加技能，不会覆盖原有技能列表",
-          "OpenCode 智能体现在支持思考强度 variant，并会在运行时使用所选强度",
+          "Multica 现在支持日语界面、官网和文档",
+          "聊天现在支持 /skill command，用来选择智能体技能",
+          "工作区现在可以显示自定义 Logo",
+          "可以给智能体追加技能，不会覆盖已有技能",
+          "OpenCode 智能体现在支持思考强度 variant",
         ],
         improvements: [
           "早期用户如果没有填写入门来源问题，现在可以在之后补充，不需要重新走完整入门流程",

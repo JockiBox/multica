@@ -295,14 +295,14 @@ export function createEnDict(allowSignup: boolean): LandingDict {
       {
         version: "0.3.14",
         date: "2026-06-02",
-        title: "Japanese Support, Skill Shortcuts, and Workspace Logos",
+        title: "Japanese Support and /skill Command",
         changes: [],
         features: [
-          "Multica now supports Japanese across the app, public site, and documentation, including Japanese settings, docs search, and language-specific font rendering",
-          "Chat can now show a slash menu for choosing an agent Skill, so teams can steer an agent without memorizing exact Skill names",
-          "Workspaces can now use a custom logo that appears in navigation, settings, breadcrumbs, and onboarding surfaces",
-          "Teams can add Skills to an agent from the CLI or API without replacing the agent's existing Skill list",
-          "OpenCode agents now expose thinking variants and carry the selected effort into runs",
+          "Multica now supports Japanese across the app, site, and docs",
+          "Chat now supports a /skill command for choosing an agent Skill",
+          "Workspaces can now show a custom logo",
+          "Teams can add Skills to an agent without replacing existing Skills",
+          "OpenCode agents now support thinking variants",
         ],
         improvements: [
           "Existing users who skipped the onboarding source question can now answer it later without restarting onboarding",
