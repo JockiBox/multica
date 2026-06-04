@@ -101,7 +101,17 @@
     "card_tooltip_issue": "Multica は {{label}} を表示中だと把握しています",
     "card_tooltip_project": "Multica はプロジェクト \"{{label}}\" を表示中だと把握しています",
     "aria_stop": "現在のページの共有を停止",
-    "aria_start": "現在のページを Multica に共有"
+    "aria_start": "現在のページを Multica に共有",
+    "tooltip_picker": "このチャットのコンテキストを選択",
+    "tooltip_selected_issue": "コンテキスト: {{label}} · クリックして変更",
+    "tooltip_selected_project": "コンテキスト: プロジェクト「{{label}}」· クリックして変更",
+    "aria_pick": "チャットコンテキストを選択",
+    "aria_clear": "チャットコンテキストをクリア",
+    "search_placeholder": "Issue または Project を検索…",
+    "section_current": "現在のページ",
+    "section_recent": "最近",
+    "section_search": "検索",
+    "search_empty": "一致する Issue / Project はありません"
   },
   "no_agent_banner": "チャットを始めるにはエージェントが必要です。",
   "offline_banner": {

@@ -49,7 +49,6 @@ import {
   ContextAnchorButton,
   ContextAnchorCard,
   buildAnchorMarkdown,
-  useRouteAnchorCandidate,
 } from "./context-anchor";
 import { ChatResizeHandles } from "./chat-resize-handles";
 import { useChatResize } from "./use-chat-resize";
@@ -213,10 +212,7 @@ export function ChatWindow() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- markRead ref stable
   }, [isOpen, activeSessionId, currentHasUnread]);
 
-  // Focus-mode anchor: derived from route each render. Prepended to the
-  // outgoing message when focus is on; the anchor persists across sends
-  // (focus mode tracks the user's page, not a per-message attachment).
-  const { candidate: anchorCandidate } = useRouteAnchorCandidate(wsId);
+  const selectedContext = useChatStore((s) => s.selectedContext);
 
   const { uploadWithToast } = useFileUpload(api);
 
@@ -294,9 +290,8 @@ export function ChatWindow() {
         return;
       }
 
-      const focusOn = useChatStore.getState().focusMode;
-      const finalContent = focusOn && anchorCandidate
-        ? `${buildAnchorMarkdown(anchorCandidate)}\n\n${content}`
+      const finalContent = selectedContext
+        ? `${buildAnchorMarkdown(selectedContext)}\n\n${content}`
         : content;
 
       const isNewSession = !activeSessionId;
@@ -306,7 +301,7 @@ export function ChatWindow() {
         isNewSession,
         agentId: activeAgent.id,
         contentLength: finalContent.length,
-        hasAnchor: focusOn && !!anchorCandidate,
+        hasAnchor: !!selectedContext,
         attachmentCount: attachmentIds?.length ?? 0,
       });
 
@@ -376,7 +371,7 @@ export function ChatWindow() {
     [
       activeSessionId,
       activeAgent,
-      anchorCandidate,
+      selectedContext,
       ensureSession,
       qc,
       setActiveSession,

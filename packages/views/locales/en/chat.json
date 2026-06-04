@@ -104,7 +104,17 @@
     "card_tooltip_issue": "Multica knows you're viewing {{label}}",
     "card_tooltip_project": "Multica knows you're viewing project \"{{label}}\"",
     "aria_stop": "Stop sharing current page",
-    "aria_start": "Share current page with Multica"
+    "aria_start": "Share current page with Multica",
+    "tooltip_picker": "Pick context for this chat",
+    "tooltip_selected_issue": "Context: {{label}} · Click to change",
+    "tooltip_selected_project": "Context: project \"{{label}}\" · Click to change",
+    "aria_pick": "Pick chat context",
+    "aria_clear": "Clear chat context",
+    "search_placeholder": "Search issues or projects…",
+    "section_current": "Current page",
+    "section_recent": "Recent",
+    "section_search": "Search",
+    "search_empty": "No matching issues or projects"
   },
   "no_agent_banner": "You need an agent to start chatting.",
   "offline_banner": {
