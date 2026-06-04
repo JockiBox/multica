@@ -295,17 +295,15 @@ export function createEnDict(allowSignup: boolean): LandingDict {
       {
         version: "0.3.16",
         date: "2026-06-04",
-        title: "Lark Bot, Smarter Chat Context, and Task Lists",
+        title: "Lark Bot Integration",
         changes: [],
         features: [
-          "Lark Bot can now be connected from an agent's Integrations tab, with setup guidance available in Docs",
+          "Multica now supports Lark as a third-party integration, so teams can scan a QR code and create a Multica agent as a Lark Bot",
           "Chat now has a searchable agent picker and an explicit context picker, making it easier to choose who should respond and what they should see",
           "Descriptions and comments now support checkbox task lists for lightweight planning inside an Issue",
           "Agents now include built-in Multica skills so they can follow workspace workflows more consistently",
         ],
         improvements: [
-          "Lark-triggered work now carries richer conversation context from posts, forwarded messages, and quoted replies",
-          "Lark messages are grouped more carefully so one conversation does not start duplicate agent runs",
           "Chat context is represented with clear mentions, making handoffs and later review easier to understand",
           "Self-hosted email setup is clearer for teams using custom mail delivery",
           "Usage analytics focus more tightly on product signals and avoid sending operational background activity",
