@@ -270,7 +270,7 @@ export function createKoDict(allowSignup: boolean): LandingDict {
         {
           version: "0.3.17",
           date: "2026-06-05",
-          title: "Lark 연결과 큰 이슈 속도 개선",
+          title: "Lark 지원과 Feishu Bot 그룹 채팅 개선",
           changes: [],
           features: [
             "하나의 Multica 배포에서 Feishu와 Lark 팀을 모두 지원하며, 연결된 Bot은 알맞은 지역 콘솔을 자동으로 사용합니다.",

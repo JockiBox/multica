@@ -295,7 +295,7 @@ export function createZhDict(allowSignup: boolean): LandingDict {
       {
         version: "0.3.17",
         date: "2026-06-05",
-        title: "Lark 连接与大型 Issue 提速",
+        title: "Lark 支持，以及飞书 Bot 群聊优化",
         changes: [],
         features: [
           "同一个 Multica 部署现在可以同时支持飞书和 Lark 团队，每个已连接 Bot 会自动使用对应区域的管理入口",

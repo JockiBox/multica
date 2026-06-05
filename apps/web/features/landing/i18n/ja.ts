@@ -271,7 +271,7 @@ export function createJaDict(allowSignup: boolean): LandingDict {
         {
           version: "0.3.17",
           date: "2026-06-05",
-          title: "Lark 連携と大きなイシューの高速化",
+          title: "Lark 対応と Feishu Bot グループチャット改善",
           changes: [],
           features: [
             "1 つの Multica デプロイで Feishu と Lark の両方のチームをサポートし、接続済み Bot は適切な地域の管理画面を自動で使えます。",

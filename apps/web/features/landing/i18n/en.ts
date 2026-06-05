@@ -295,7 +295,7 @@ export function createEnDict(allowSignup: boolean): LandingDict {
       {
         version: "0.3.17",
         date: "2026-06-05",
-        title: "Lark Connections + Faster Large Issues",
+        title: "Lark Support and Feishu Bot Group Chat Improvements",
         changes: [],
         features: [
           "One Multica deployment can now support both Feishu and Lark teams, with each connected bot using the right regional console automatically",
