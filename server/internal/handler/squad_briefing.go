@@ -169,13 +169,13 @@ func buildSquadExecutionState(ctx context.Context, q *db.Queries, issueID pgtype
 	sb.WriteString("This is a live snapshot taken when you were triggered — read it before you decide.\n\n")
 
 	if len(workers) == 0 {
-		sb.WriteString("**No worker session is currently running on this issue.** ")
-		sb.WriteString("No delegated agent is executing right now. A worker's task ends the moment it stops producing output, so a recent comment that reads like work is still in progress (\"I'll continue later\", \"still verifying\", a partial/interim report) does NOT mean anything is running — nothing resumes automatically. ")
+		sb.WriteString("**No worker task is currently active on this issue.** ")
+		sb.WriteString("No delegated agent has an active queued, waiting, or running task right now. A worker's task ends the moment it stops producing output, so a recent comment that reads like work is still in progress (\"I'll continue later\", \"still verifying\", a partial/interim report) does NOT mean anything is active — nothing resumes automatically. ")
 		sb.WriteString("Before you record `no_action`, confirm the issue is genuinely done or genuinely waiting on a human. If work remains, delegate the next step, or mark the issue `blocked` and escalate. An interim report with no active session is a stalled issue, not a progressing one.\n")
 		return sb.String()
 	}
 
-	fmt.Fprintf(&sb, "**%d worker session(s) currently running on this issue.** A delegated agent is executing right now:\n", len(workers))
+	fmt.Fprintf(&sb, "**%d worker task(s) currently active on this issue.** A delegated agent has queued, waiting, or running work:\n", len(workers))
 	for _, t := range workers {
 		name := "a squad member"
 		if ag, err := q.GetAgent(ctx, t.AgentID); err == nil {
@@ -183,7 +183,7 @@ func buildSquadExecutionState(ctx context.Context, q *db.Queries, issueID pgtype
 		}
 		fmt.Fprintf(&sb, "- %s — status `%s`\n", name, t.Status)
 	}
-	sb.WriteString("\nYou usually do NOT need to delegate the same work again while a session is in flight — recording `no_action` and waiting for it to finish is appropriate. Re-delegate only if the running work is clearly wrong or stuck, or hand off a genuinely independent next step.\n")
+	sb.WriteString("\nYou usually do NOT need to delegate the same work again while a worker task is in flight — recording `no_action` and waiting for it to finish is appropriate. Re-delegate only if the active work is clearly wrong or stuck, or hand off a genuinely independent next step.\n")
 	return sb.String()
 }
 
