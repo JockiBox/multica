@@ -2952,9 +2952,12 @@ func TestClaimTask_ChatDeliversAllUnansweredUserMessages(t *testing.T) {
 }
 
 // TestClaimTask_ChatPopulatesInitiator verifies MUL-2645 for chat tasks: the
-// claim response surfaces the chat session creator as the task initiator
-// (member type + id + name + email). Chat sessions are creator-only, so the
-// creator is the person behind every message in the session.
+// claim response surfaces the STORED task initiator (initiator_user_id captured
+// at enqueue), NOT chat_session.creator_id. This is the MUL-2645 review fix: for
+// Lark group chats the session creator is the installer, not the sender, so the
+// claim must read the stored sender. The test pins this by making the creator a
+// DIFFERENT user (the "installer") from the stored initiator (the sender) and
+// asserting the claim resolves the sender.
 func TestClaimTask_ChatPopulatesInitiator(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
@@ -2962,12 +2965,22 @@ func TestClaimTask_ChatPopulatesInitiator(t *testing.T) {
 	ctx := context.Background()
 	agentID, runtimeID, daemonID := createRuntimeGuardAgent(t, ctx)
 
+	// A separate user stands in for the Lark group session creator (installer).
+	var installerID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO "user" (name, email) VALUES ('Installer User', 'installer-test@multica.ai')
+		RETURNING id
+	`).Scan(&installerID); err != nil {
+		t.Fatalf("setup: create installer user: %v", err)
+	}
+	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM "user" WHERE id = $1`, installerID) })
+
 	var sessionID string
 	if err := testPool.QueryRow(ctx, `
 		INSERT INTO chat_session (workspace_id, agent_id, creator_id, title)
 		VALUES ($1, $2, $3, 'initiator chat')
 		RETURNING id
-	`, testWorkspaceID, agentID, testUserID).Scan(&sessionID); err != nil {
+	`, testWorkspaceID, agentID, installerID).Scan(&sessionID); err != nil {
 		t.Fatalf("setup: create chat session: %v", err)
 	}
 	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM chat_session WHERE id = $1`, sessionID) })
@@ -2977,10 +2990,11 @@ func TestClaimTask_ChatPopulatesInitiator(t *testing.T) {
 	`, sessionID); err != nil {
 		t.Fatalf("setup: insert user message: %v", err)
 	}
+	// initiator_user_id = the real sender (testUserID), distinct from creator.
 	if _, err := testPool.Exec(ctx, `
-		INSERT INTO agent_task_queue (agent_id, runtime_id, chat_session_id, status, priority)
-		VALUES ($1, $2, $3, 'queued', 2)
-	`, agentID, runtimeID, sessionID); err != nil {
+		INSERT INTO agent_task_queue (agent_id, runtime_id, chat_session_id, status, priority, initiator_user_id)
+		VALUES ($1, $2, $3, 'queued', 2, $4)
+	`, agentID, runtimeID, sessionID, testUserID); err != nil {
 		t.Fatalf("setup: create chat task: %v", err)
 	}
 

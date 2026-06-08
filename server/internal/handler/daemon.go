@@ -1162,6 +1162,23 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Stored task initiator: chat tasks persist the real message sender at
+	// enqueue time (web: request user; Lark: inbound sender — NOT the chat
+	// session creator, which for Lark groups is the installer). When set, it is
+	// the authoritative initiator for this run; resolve the live name/email so
+	// the daemon can render `## Task Initiator`. Comment-triggered tasks instead
+	// resolve their initiator from the triggering comment's author below; the
+	// two paths are mutually exclusive (a task is either chat or issue-bound).
+	// See MUL-2645.
+	if task.InitiatorUserID.Valid {
+		resp.InitiatorType = "member"
+		resp.InitiatorID = uuidToString(task.InitiatorUserID)
+		if u, err := h.Queries.GetUser(r.Context(), task.InitiatorUserID); err == nil {
+			resp.InitiatorName = u.Name
+			resp.InitiatorEmail = u.Email
+		}
+	}
+
 	// Include workspace ID and repos so the daemon can set up worktrees.
 	//
 	// Repo precedence: project-bound github_repo resources override workspace
@@ -1353,19 +1370,6 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 			resp.WorkspaceID = uuidToString(cs.WorkspaceID)
 			resp.ChatSessionID = uuidToString(cs.ID)
 			resp.ThreadName = cs.Title
-			// The chat session creator is the task initiator — chat sessions
-			// are creator-only (SendChatMessage rejects non-creators), so the
-			// person behind every message in this session is the creator.
-			// Surface their identity so a workspace-visible agent answers the
-			// right person rather than the runtime owner. See MUL-2645.
-			if cs.CreatorID.Valid {
-				resp.InitiatorType = "member"
-				resp.InitiatorID = uuidToString(cs.CreatorID)
-				if u, err := h.Queries.GetUser(r.Context(), cs.CreatorID); err == nil {
-					resp.InitiatorName = u.Name
-					resp.InitiatorEmail = u.Email
-				}
-			}
 			if ws, err := h.Queries.GetWorkspace(r.Context(), cs.WorkspaceID); err == nil && ws.Repos != nil {
 				var repos []RepoData
 				if json.Unmarshal(ws.Repos, &repos) == nil && len(repos) > 0 {
