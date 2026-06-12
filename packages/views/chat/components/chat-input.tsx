@@ -23,6 +23,7 @@ const logger = createLogger("chat.ui");
 interface ChatInputProps {
   onSend: (content: string, attachmentIds?: string[]) => void | boolean | Promise<void | boolean>;
   restoreDraftRequest?: { id: string; content: string } | null;
+  onRestoreDraftConsumed?: () => void;
   /** Receives a File and returns the attachment row (with id + CDN link).
    *  The wrapper owner (ChatWindow) lazy-creates a chat_session if needed
    *  and forwards `chatSessionId` to the upload — chat-input only cares
@@ -48,6 +49,7 @@ interface ChatInputProps {
 export function ChatInput({
   onSend,
   restoreDraftRequest,
+  onRestoreDraftConsumed,
   onUploadFile,
   onStop,
   isRunning,
@@ -127,6 +129,7 @@ export function ChatInput({
         draftKey,
         restoreId: restoreDraftRequest.id,
       });
+      onRestoreDraftConsumed?.();
       return;
     }
     setInputDraft(draftKey, restoreDraftRequest.content);
@@ -136,7 +139,8 @@ export function ChatInput({
       content: restoreDraftRequest.content,
       draftKey,
     });
-  }, [draftKey, inputDraft, restoreDraftRequest, setInputDraft]);
+    onRestoreDraftConsumed?.();
+  }, [draftKey, inputDraft, onRestoreDraftConsumed, restoreDraftRequest, setInputDraft]);
 
   const handleUpload = useCallback(
     async (file: File): Promise<UploadResult | null> => {

@@ -869,49 +869,46 @@ func (s *TaskService) finalizeCancelledChatMessage(ctx context.Context, task db.
 	if !task.ChatSessionID.Valid {
 		return nil
 	}
-	messages, err := s.Queries.ListTaskMessages(ctx, task.ID)
-	if err != nil {
-		slog.Warn("failed to load cancelled chat task messages",
-			"task_id", util.UUIDToString(task.ID),
-			"chat_session_id", util.UUIDToString(task.ChatSessionID),
-			"error", err,
-		)
-		return nil
-	}
-	if len(messages) == 0 {
-		deleted, err := s.Queries.DeleteUserChatMessageByTask(ctx, task.ID)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil
-		}
+	var cancelled *CancelledChatMessageResult
+	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
+		messages, err := qtx.ListTaskMessages(ctx, task.ID)
 		if err != nil {
-			slog.Error("failed to delete empty cancelled chat user message",
-				"task_id", util.UUIDToString(task.ID),
-				"chat_session_id", util.UUIDToString(task.ChatSessionID),
-				"error", err,
-			)
+			return fmt.Errorf("list cancelled chat task messages: %w", err)
+		}
+		if len(messages) == 0 {
+			deleted, err := qtx.DeleteUserChatMessageByTask(ctx, task.ID)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil
+			}
+			if err != nil {
+				return fmt.Errorf("delete empty cancelled chat user message: %w", err)
+			}
+			cancelled = &CancelledChatMessageResult{
+				ChatSessionID:  util.UUIDToString(deleted.ChatSessionID),
+				MessageID:      util.UUIDToString(deleted.ID),
+				Content:        deleted.Content,
+				RestoreToInput: true,
+			}
 			return nil
 		}
-		return &CancelledChatMessageResult{
-			ChatSessionID:  util.UUIDToString(deleted.ChatSessionID),
-			MessageID:      util.UUIDToString(deleted.ID),
-			Content:        deleted.Content,
-			RestoreToInput: true,
+		if _, err := qtx.CreateChatMessage(ctx, db.CreateChatMessageParams{
+			ChatSessionID: task.ChatSessionID,
+			Role:          "assistant",
+			Content:       "Stopped.",
+			TaskID:        task.ID,
+			ElapsedMs:     computeChatElapsedMs(task),
+		}); err != nil {
+			return fmt.Errorf("create cancelled chat message: %w", err)
 		}
-	}
-	if _, err := s.Queries.CreateChatMessage(ctx, db.CreateChatMessageParams{
-		ChatSessionID: task.ChatSessionID,
-		Role:          "assistant",
-		Content:       "Stopped.",
-		TaskID:        task.ID,
-		ElapsedMs:     computeChatElapsedMs(task),
+		return nil
 	}); err != nil {
-		slog.Error("failed to save cancelled chat message",
+		slog.Error("failed to finalize cancelled chat message",
 			"task_id", util.UUIDToString(task.ID),
 			"chat_session_id", util.UUIDToString(task.ChatSessionID),
 			"error", err,
 		)
 	}
-	return nil
+	return cancelled
 }
 
 // ClaimTask atomically claims the next queued task for an agent,

@@ -334,11 +334,13 @@ describe("ChatInput attachment wiring", () => {
 
 describe("ChatInput async send", () => {
   it("restores a cancelled empty run draft into the editor", async () => {
+    const onRestoreDraftConsumed = vi.fn();
     renderInput({
       restoreDraftRequest: {
         id: "msg-restored",
         content: "bring this back",
       },
+      onRestoreDraftConsumed,
     });
 
     await waitFor(() => {
@@ -347,7 +349,33 @@ describe("ChatInput async send", () => {
         "bring this back",
       );
       expect(editorProps.last?.defaultValue).toBe("bring this back");
+      expect(onRestoreDraftConsumed).toHaveBeenCalledTimes(1);
     });
+  });
+
+  it("consumes a restore request even when an existing draft blocks restore", async () => {
+    const state = useChatStore.getState() as unknown as {
+      inputDrafts: Record<string, string>;
+      setInputDraft: ReturnType<typeof vi.fn>;
+    };
+    state.inputDrafts["__draft_new__:agent-1"] = "already typing";
+    const onRestoreDraftConsumed = vi.fn();
+
+    renderInput({
+      restoreDraftRequest: {
+        id: "msg-restored",
+        content: "bring this back",
+      },
+      onRestoreDraftConsumed,
+    });
+
+    await waitFor(() => {
+      expect(onRestoreDraftConsumed).toHaveBeenCalledTimes(1);
+    });
+    expect(state.setInputDraft).not.toHaveBeenCalledWith(
+      "__draft_new__:agent-1",
+      "bring this back",
+    );
   });
 
   it("keeps the draft while send is pending and clears after acceptance", async () => {

@@ -230,6 +230,9 @@ export function ChatWindow() {
     id: string;
     content: string;
   } | null>(null);
+  const handleRestoreDraftConsumed = useCallback(() => {
+    setRestoreDraftRequest(null);
+  }, []);
 
   // Legacy archived sessions (the old soft-archive feature was removed but
   // pre-existing rows with status='archived' may still exist) are excluded
@@ -766,6 +769,7 @@ export function ChatWindow() {
       <ChatInput
         onSend={handleSend}
         restoreDraftRequest={restoreDraftRequest}
+        onRestoreDraftConsumed={handleRestoreDraftConsumed}
         onUploadFile={handleUploadFile}
         onStop={handleStop}
         isRunning={!!pendingTaskId}
