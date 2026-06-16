@@ -208,6 +208,7 @@ const mockApiObj = vi.hoisted(() => ({
   unsubscribeFromIssue: vi.fn().mockResolvedValue(undefined),
   getActiveTasksForIssue: vi.fn().mockResolvedValue({ tasks: [] }),
   listTasksByIssue: vi.fn().mockResolvedValue([]),
+  rerunIssue: vi.fn(),
   listTaskMessages: vi.fn().mockResolvedValue([]),
   listChildIssues: vi.fn().mockResolvedValue({ issues: [] }),
   listIssues: vi.fn().mockResolvedValue({ issues: [], total: 0 }),
@@ -507,6 +508,7 @@ describe("IssueDetail (shared)", () => {
     mockApiObj.listIssues.mockResolvedValue({ issues: [], total: 0 });
     mockApiObj.getActiveTasksForIssue.mockResolvedValue({ tasks: [] });
     mockApiObj.listTasksByIssue.mockResolvedValue([]);
+    mockApiObj.rerunIssue.mockResolvedValue({ id: "task-rerun" });
     mockApiObj.listMembers.mockResolvedValue([
       { user_id: "user-1", name: "Test User", email: "test@test.com", role: "admin" },
     ]);
@@ -775,6 +777,33 @@ describe("IssueDetail (shared)", () => {
     });
 
     expect(screen.getByText("I can help with this")).toBeInTheDocument();
+  });
+
+  it("reruns the source task from an agent failure comment", async () => {
+    mockApiObj.listTimeline.mockResolvedValue([
+      ...mockTimeline,
+      {
+        type: "comment",
+        id: "comment-failed-task",
+        actor_type: "agent",
+        actor_id: "agent-1",
+        content: "API Error: 500 Internal server error",
+        parent_id: null,
+        created_at: "2026-01-18T00:00:00Z",
+        updated_at: "2026-01-18T00:00:00Z",
+        comment_type: "system",
+        source_task_id: "task-failed",
+      },
+    ]);
+
+    renderIssueDetail();
+
+    await screen.findByText("API Error: 500 Internal server error");
+    fireEvent.click(screen.getByRole("button", { name: "Retry task" }));
+
+    await waitFor(() => {
+      expect(mockApiObj.rerunIssue).toHaveBeenCalledWith("issue-1", "task-failed");
+    });
   });
 
   it("collapses non-trailing activity blocks and expands the last one by default", async () => {
