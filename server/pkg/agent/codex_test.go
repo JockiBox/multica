@@ -780,6 +780,40 @@ func TestCodexRequestFailsImmediatelyAfterProcessExit(t *testing.T) {
 	}
 }
 
+func TestCodexRequestPrefersContextCancellationOverProcessExit(t *testing.T) {
+	t.Parallel()
+
+	c, fs, _ := newTestCodexClient(t)
+	processExitMarked := make(chan error, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			if len(fs.Lines()) >= 1 {
+				cancel()
+				c.markProcessExited(errCodexProcessExited)
+				processExitMarked <- nil
+				return
+			}
+			if time.Now().After(deadline) {
+				processExitMarked <- fmt.Errorf("timed out waiting for request write")
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+
+	_, err := c.request(ctx, "thread/start", map[string]any{})
+	if markErr := <-processExitMarked; markErr != nil {
+		t.Fatal(markErr)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("request error = %v, want context.Canceled", err)
+	}
+}
+
 func TestCodexHandleInvalidJSON(t *testing.T) {
 	t.Parallel()
 
@@ -1439,6 +1473,38 @@ func TestCodexExecuteFailsWhenProcessExitsDuringActiveTurn(t *testing.T) {
 	}
 	if strings.Contains(result.Error, "timeout") {
 		t.Fatalf("process exit should fail fast instead of timeout, got %q", result.Error)
+	}
+}
+
+func TestCodexExecuteTimeoutWinsOverProcessExitDuringActiveTurn(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+
+	fakePath := writeFakeCodexAppServer(t, ""+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":1,"result":{}}'`+"\n"+
+		`read line`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thr-timeout"}}}'`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":3,"result":{}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr-timeout","turn":{"id":"turn-timeout"}}}'`+"\n"+
+		`read line`+"\n")
+
+	result := executeFakeCodex(t, fakePath, ExecOptions{
+		Timeout:                   5 * time.Second,
+		SemanticInactivityTimeout: 30 * time.Second,
+	})
+	if result.Status != "timeout" {
+		t.Fatalf("expected timeout, got status=%q error=%q", result.Status, result.Error)
+	}
+	if !strings.Contains(result.Error, "codex timed out after") {
+		t.Fatalf("expected timeout error, got %q", result.Error)
+	}
+	if strings.Contains(result.Error, "codex process exited") {
+		t.Fatalf("timeout should win over process EOF, got %q", result.Error)
 	}
 }
 

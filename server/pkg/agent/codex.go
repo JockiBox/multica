@@ -761,6 +761,16 @@ func (b *codexBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 				}
 			}
 		}
+		finishRunContextDone := func() {
+			waitingForTurn = false
+			if runCtx.Err() == context.DeadlineExceeded {
+				finalStatus = "timeout"
+				finalError = fmt.Sprintf("codex timed out after %s", timeout)
+			} else {
+				finalStatus = "aborted"
+				finalError = "execution cancelled"
+			}
+		}
 		for waitingForTurn {
 			select {
 			case aborted := <-turnDone:
@@ -815,26 +825,23 @@ func (b *codexBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 					"idle_for", time.Since(lastSemanticActivity).Round(time.Millisecond).String(),
 				)
 			case <-runCtx.Done():
-				waitingForTurn = false
-				if runCtx.Err() == context.DeadlineExceeded {
-					finalStatus = "timeout"
-					finalError = fmt.Sprintf("codex timed out after %s", timeout)
-				} else {
-					finalStatus = "aborted"
-					finalError = "execution cancelled"
-				}
+				finishRunContextDone()
 			case <-c.processDone:
 				select {
 				case aborted := <-turnDone:
 					finishTurn(aborted)
 				default:
-					waitingForTurn = false
-					finalStatus = "failed"
-					processExitErr = c.getProcessErr()
-					if processExitErr == nil {
-						processExitErr = errCodexProcessExited
+					if runCtx.Err() != nil {
+						finishRunContextDone()
+					} else {
+						waitingForTurn = false
+						finalStatus = "failed"
+						processExitErr = c.getProcessErr()
+						if processExitErr == nil {
+							processExitErr = errCodexProcessExited
+						}
+						finalError = processExitErr.Error()
 					}
-					finalError = processExitErr.Error()
 				}
 			}
 		}
@@ -1236,6 +1243,9 @@ type rpcResult struct {
 }
 
 func (c *codexClient) request(ctx context.Context, method string, params any) (json.RawMessage, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	c.mu.Lock()
 	if c.processErr != nil {
 		err := c.processErr
@@ -1288,6 +1298,9 @@ func (c *codexClient) request(ctx context.Context, method string, params any) (j
 		delete(c.pending, id)
 		err := c.processErr
 		c.mu.Unlock()
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
 		if err == nil {
 			err = errCodexProcessExited
 		}
